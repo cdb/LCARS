@@ -40,6 +40,10 @@ Three consumers, one file:
 - **`lcars eeh`** (this skill) — orchestrates one **fix** to LCARS, driven from
   whatever foreign repo the captain happens to be in.
 
+**Its sibling: `DELEGATION.md`** (`lcars-eeh docs delegation`) — the same three
+consumers read it for **who does a unit of work** (the T0/T1/T2 tier judgement
+and the hand-off brief); this file stays the authority on **the loop**.
+
 Read it with the command `install.sh` puts on your PATH. It resolves this file
 beside whichever copy of `eeh.sh` ran, so it is stable from any cwd and under
 either install symlink farm (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot):

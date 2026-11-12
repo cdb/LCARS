@@ -78,12 +78,14 @@ if [ "${1:-}" = "docs" ]; then
       ech|ECH|HOLOGRAM-COMMAND-MODE.md)             printf 'HOLOGRAM-COMMAND-MODE.md\n' ;;
       skill|SKILL|SKILL.md)                         printf 'SKILL.md\n' ;;
       bug-prd|bug-prd.md)                           printf 'bug-prd.md\n' ;;
+      delegation|DELEGATION|DELEGATION.md)          printf 'DELEGATION.md\n' ;;
+      delegate-brief|delegate-brief.md)             printf 'delegate-brief.md\n' ;;
       *) printf '\n' ;;
     esac
   }
   if [ -z "$name" ]; then
     echo "lcars-eeh docs <name> — print one of this skill's documents."
-    echo "  names: orchestration | ech | skill | bug-prd"
+    echo "  names: orchestration | delegation | ech | skill | bug-prd | delegate-brief"
     echo "  --path prints the resolved absolute path instead of the contents."
     echo "  resolved from: $SCRIPT_DIR"
     exit 0
@@ -92,7 +94,7 @@ if [ "${1:-}" = "docs" ]; then
   if [ -z "$file" ] || [ ! -f "$SCRIPT_DIR/$file" ]; then
     {
       echo "lcars eeh: no such document '$name'."
-      echo "  names: orchestration | ech | skill | bug-prd"
+      echo "  names: orchestration | delegation | ech | skill | bug-prd | delegate-brief"
     } >&2
     exit 1
   fi

@@ -18,6 +18,11 @@ checks, writing bug PRDs and the merge call. Everything sequenceable is
 > hits an LCARS bug it works around it with another verb and ledgers it, or it
 > stops and asks. Fixing LCARS is `lcars eeh` § 2, under `ORCHESTRATION.md`.
 
+> **WHO does a unit of work is not in this file.** The tier judgement
+> (T0/T1/T2), what a delegate must absorb, and what a hand-off brief must say
+> live in `DELEGATION.md` — `lcars-eeh docs delegation`. It is the authority;
+> § 6's standing live-check job below applies at every tier, unchanged.
+
 ## Unattended Copilot setup: no blanket trust is required
 
 **An unattended EEH or ECH run does not require `COPILOT_ALLOW_ALL=true`, and

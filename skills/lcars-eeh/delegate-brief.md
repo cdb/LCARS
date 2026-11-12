@@ -1,0 +1,201 @@
+# delegate-brief.md — the hand-off brief a delegate is given
+
+The template `lcars-ech delegate <unit-id>` renders to
+`.git/lcars/delegates/<delegate-id>/BRIEF.md`. It is **the thing the captain used
+to type**, on disk, so it survives a session and can be reviewed before anyone
+acts on it.
+
+Why a file and not a heredoc: `bug-prd.md` is the precedent. A template buried in
+a shell script cannot be read by the person whose work depends on it, cannot be
+diffed, and gets edited by whoever is nearest the bug. This one is reviewable.
+
+## What fills it, and what may not
+
+The brief is rendered **from artifact paths alone** — the unit's record in
+`autopilot.json`, the mission's `state.json`, and the tier's contract block in
+`DELEGATION.md`. **Never from the orchestrator's transcript.** A transcript is
+not on disk, so a brief built from one cannot be re-minted, reviewed or trusted
+a day later, which is the whole defect this file exists to close.
+
+The four numbered sections are *the four things every hand-off must state*
+(`DELEGATION.md` § *The four things every hand-off must state*). Without all
+four, delegates duplicate each other's work and leave gaps between them.
+
+## The slots
+
+| Slot | Filled from |
+|---|---|
+| `{{UNIT}}` | the unit id given to `tier` / `delegate` |
+| `{{DELEGATE_ID}}` | the minted delegate id |
+| `{{TIER}}` | `units.<id>.tier` — the ECH's recorded judgement |
+| `{{TIER_WHY}}` | `units.<id>.tierWhy` — why it chose that tier |
+| `{{ESTIMATE_SHOWN}}` | `units.<id>.estimateShown` — the factory estimate it was shown, or `none` |
+| `{{GOAL}}` | a CHECKABLE statement of done, from the richest artifact on disk: `prd.md`'s own `**Goal:**` plus its `**Acceptance Criteria:**` if there is one, else the mission's `state.json` title (said to be a title), else a plain statement that neither exists. Never a topic passed off as a goal. The source is recorded as `delegates.<id>.goalSource` |
+| `{{MISSION}}` | the mission id, and the path to its `state.json` |
+| `{{STATE_PATH}}` | the absolute path to that `state.json` |
+| `{{ARTIFACTS}}` | every artifact ACTUALLY PRESENT under `missions/<id>/`, by absolute path — `prd.md`, `plan.json`, `tickets/`, … (**D1**) |
+| `{{WORKSPACE}}` | the brief's own **self-check** — the absolute path it was minted at, and the instruction not to use it anywhere else but to ask for a re-mint (**D16**) — then the repository root, the Mission's branch and base, and the ABSOLUTE path of the launcher that minted this brief (**D6**) |
+| `{{TIER_DELIVERABLE}}` | what THIS tier adds to the hand-back. Empty at T0/T1; at T2 it asks for the tester's evidence and bug list (**D4**) |
+| `{{TIER_CONTRACT}}` | the `<!-- tier:<T> -->` block of `DELEGATION.md`, verbatim |
+| `{{VERBS}}` | the LCARS verbs in scope for this unit |
+| `{{BOUNDARIES}}` | what this unit does not cover |
+| `{{CREATED_AT}}` | when it was minted |
+| `{{SIGNOFF}}` | who minted it and under which recorded judgement |
+| `{{ENGINE_STAMP}}` | **S352** — the engine the delegate must run on. Rendered EMPTY today. |
+| `{{FRONT_DOOR}}` | **S352** — the front-door clause. Rendered EMPTY today. |
+
+**`{{ENGINE_STAMP}}` and `{{FRONT_DOOR}}` are named and empty on purpose.**
+S352 adds the engine stamp and the front-door clause to this same file. They are
+declared here now so that session edits one template instead of inventing a
+second one — and so nothing invents their content early. A renderer must leave
+an unsupported slot **empty**, never print the token.
+
+## The brief is its own guard (D16)
+
+`{{WORKSPACE}}` leads with the path this brief was **minted at** and one
+instruction: if the file you are reading is not there, do not use it — ask the
+ECH to re-mint. Every other path in the brief is **absolute**, which is what the
+delegate needs in order to `cat` anything, and which is also why a copied brief
+is dangerous rather than merely stale: in a `cp -R` of the repo, with the
+original still present, every path still resolves and the delegate does coherent
+work in the **wrong repository** while the ECH believes otherwise. The listing
+verbs warn about this, but a hand-over is a `cat` of one file and never runs
+them. So the artifact carries the check. **The cure is the self-check, not
+relativising the paths.**
+
+## The template
+
+Everything between the fences is the template. The fences are the declared
+boundary the renderer reads — not a heading it guesses at.
+
+<!-- template:begin -->
+# DELEGATE BRIEF — {{DELEGATE_ID}} · unit {{UNIT}} · tier {{TIER}}
+
+Minted {{CREATED_AT}} by the ECH, from artifact paths alone.
+You are a delegate of the LCARS Emergency Command Hologram. Read this whole
+file before you touch anything. If something you need is not in here, that is a
+defect in the brief — say so rather than guessing.
+
+## Your tier: {{TIER}}
+
+The ECH chose this tier freely and recorded why: **{{TIER_WHY}}**
+The factory's own estimate, which it was shown and was free to disagree with:
+**{{ESTIMATE_SHOWN}}**
+
+This is your contract, verbatim from `DELEGATION.md` (read the whole file with
+`lcars-eeh docs delegation`):
+
+{{TIER_CONTRACT}}
+
+## Where you work
+
+{{WORKSPACE}}
+
+## 1. The goal
+
+{{GOAL}}
+
+Mission: **{{MISSION}}**
+Its record on disk, which is the authority over anything summarised here:
+`{{STATE_PATH}}`
+
+### Read these before you write anything
+
+These are the artifacts actually on disk for this unit. The brief summarises
+them; they are the authority.
+
+{{ARTIFACTS}}
+
+## 2. The output format expected back
+
+Report in **SUMMARIES, never raw transcripts.** The ECH's context is the
+scarcest thing in the system; a pasted transcript spends it on material you have
+already acted on, and it is your job to have absorbed what a transcript would
+have shown.
+
+Your hand-back states, in this order:
+
+- **What is now true** — the goal above, answered, or the part of it that is.
+- **What you ran, and what it printed** — the commands and their real output,
+  with the real identifiers (ids, paths, field names). Not a paraphrase.
+- **What you cured yourself** — each stumble you absorbed and how. At T1 and T2
+  this section is the measure of whether the tier earned anything.
+- **What is still open** — anything you could not resolve, and what it is
+  blocked on.
+- **What you did NOT touch** — so the ECH can tell an untested area from a
+  working one.
+
+{{TIER_DELIVERABLE}}
+**Your hand-back is a report, never a verdict.** See § 5.
+
+## 3. The LCARS verbs in scope
+
+{{VERBS}}
+
+Use the factory's own verbs and nothing else. **Never hand-step the stage
+machine**, and never build a second route to an outcome a verb already
+produces — front-door doctrine, `HOLOGRAM-COMMAND-MODE.md` § 4a, and it applies
+to you exactly as it applies to the ECH. Run any of them through the launcher named in *Where you work* above, **by its
+absolute path** — a bare `lcars-ech` on `PATH` may be a different install than
+the one that minted this brief. Do not re-implement a verb, and do not guess
+its flags.
+{{FRONT_DOOR}}
+
+## 4. The boundaries
+
+{{BOUNDARIES}}
+
+Also, and without exception:
+
+- You do not get a parallel-mission slot of your own and you may not raise the
+  two-mission ceiling (`HOLOGRAM-COMMAND-MODE.md` § 8).
+- You do not interrupt the captain. A scope change, a product call he owns, or a
+  conflict with a standing rule comes back to the ECH, which owns the interrupt
+  budget (§ 9). **Your problem is the ECH's problem**, not his.
+- You do not merge, approve, land or mark anything verified. That is § 5.
+- Everything you write stays inside `.git/lcars/` or the mission's own branch.
+
+## 5. The ECH verifies this itself — at every tier
+
+When you are done, **the ECH will verify the work itself**, independently of
+whatever you report. Every time, at every tier, including this one:
+
+1. it reads **Number One's** verdict,
+2. it runs **`lcars-ech live-check`** itself — its own eyes on the real product,
+3. it takes the one action **`lcars-ech policy`** gives for that verdict pair,
+4. it files what it found with **`lcars-ech file-bug`** — its own bugs, in its
+   own words.
+
+On the modelled run Number One filed **0 of 31** bugs and every one came from
+the ECH's own live check. So this is not a formality and it is not a fallback.
+
+**Your hand-back is a report, never a verdict.** Saying "all green" is an input
+to that check, not a substitute for it, and nothing advances on your word:
+closing you out marks *you* done and moves neither the mission's stage nor its
+verdict.
+
+{{ENGINE_STAMP}}
+
+## Sign-off
+
+{{SIGNOFF}}
+<!-- template:end -->
+
+## The T2 addition
+
+At T2 the tier contract above carries **T1's contract and T2's**, in that order,
+because T2 is defined as "T1, plus a tester" — a strict superset. A T2 brief
+that embedded only the T2 fence never told its delegate T1's absorption
+obligation at all, and a live Copilot seat handed one said so unprompted: *"the
+full inherited T1 obligations are not included."*
+
+T2 also fills `{{TIER_DELIVERABLE}}`, so the tester arrives as an **instruction
+to this delegate** — § 2 asks for the tester's evidence and its bug list, and
+§ 3 puts standing one up in scope. Before that, T2 appeared only as a quoted
+description of what T2 *is*, and a T2 delegate could file a fully §2-conformant
+hand-back having stood up no tester at all.
+
+The brief points at `ORCHESTRATION.md` for what a tester is and does — it does
+not restate those rules. A second copy of a rule is a rule that drifts. That
+tester is **additive**: it is an extra independent pair of eyes at the gate and
+it **does not replace** the ECH's own check in § 5.
