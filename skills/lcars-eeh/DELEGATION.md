@@ -196,6 +196,72 @@ one cannot be re-minted, reviewed, or trusted a day later.
 
 ---
 
+## NO SILENT HOURS — the beat
+
+A delegate **emits one beat per step**, as it finishes it:
+
+```bash
+lcars-ech beat <delegate-id> "<one line of what you just did>"
+```
+
+**Why this exists, and why it is not optional.** `HOLOGRAM-COMMAND-MODE.md` § 8
+carries the single biggest measured defect in this mode: *a wait has a limit, a
+re-check, and an action on expiry* — four seat models out of four, across three
+model families, stopped dead where that rule was missing, because *a seat that
+waits for ever is indistinguishable from a dead one*. Every mechanism the ECH
+has for enforcing it — `waitingSince`, `await`, `watch`, `stalled`, the crontab
+`heartbeat` — guards **a process the ECH started itself** and decides from a
+**recorded pid**. A delegate has no pid here. Without a beat, a delegate that
+produces nothing for three hours is invisible to all of it, and the ECH finds
+out in the morning.
+
+**The limit, the re-check and the action, in the same three parts as § 8:**
+
+- **The limit.** `1800` seconds — thirty minutes — between beats, overridable as
+  `LCARS_ECH_BEAT_LIMIT` exactly as `LCARS_ECH_WAIT_LIMIT` bounds a wait. The
+  brief a delegate is handed **states the limit it is held to**, so the
+  obligation travels with the hand-off instead of living only here.
+- **The re-check.** `lcars-ech stalled` — which the crontab heartbeat already
+  runs every hour, unchanged — names every delegate whose last beat is older
+  than the limit, and every delegate that has **never** beat and was minted
+  longer ago than it. `lcars-ech status` shows the minutes since each delegate's
+  last beat on the same line as its tier. A delegate whose status is `done` is
+  never reported: it is quiet because it finished.
+- **The action on expiry.** The report does **not** say "it is stuck". It names
+  the delegate, its unit, its tier, how long it has been quiet, the limit it is
+  **measured against**, and its last words — then gives three real verbs to pick
+  from: **re-brief** it, **replace** it (`delegate close`, then a fresh
+  `delegate`), or **raise it with the captain** (`lcars-ech ask`). **One beat
+  clears the line.** The minted limit is **recorded** at
+  `delegates.<id>.beatLimit`, so a delegate briefed under one limit and measured
+  against another is told both figures rather than being told one of them as a
+  fact.
+
+**A BROKEN LIMIT DEGRADES; IT DOES NOT REFUSE.** A `LCARS_ECH_BEAT_LIMIT` that
+is not a whole number of seconds — `30m` is the one a model types after reading
+the line above — is **not applied**, the documented `1800` is used instead, and
+the problem is said out loud twice: once on stderr and once in every report line
+that applies the limit. It is never a refusal: the first version of this check
+was one, and in a repo with **no delegates at all** it stopped `lcars-ech
+stalled` reporting a failed mission and took `next`, `status` and `playbook`
+down with it. A limit with nothing to measure must never silence machinery that
+does not read it, and `stalled` always exits 0.
+
+**AND A CLOCK THAT CANNOT BE READ IS REPORTED, NOT SKIPPED.** A delegate whose
+recorded timestamp will not parse, or sits in the future, is **UNTIMEABLE** —
+`stalled` names it and says what it does not know, instead of staying quiet,
+which from outside reads exactly like all-quiet. That lane has its own tally and
+its own actions: one beat, `delegate close`, or repair the record.
+
+**WHAT EXPIRY IS NOT.** It is not a kill. The ECH has no process of a delegate's
+to kill, and nothing in this path kills anything — kill discipline is unchanged
+and still only ever by a recorded pid or its isolated process group. It is also
+**not an interrupt**: a silent delegate reaches the **ECH**, never the captain.
+The interrupt budget (§ 9) gains nothing from delegation, and a delegate's
+problem is the ECH's problem.
+
+---
+
 ## Only summaries travel up
 
 A delegate reports in **summaries**, **never raw transcripts**. The ECH's
@@ -258,6 +324,7 @@ DELEGATION, and the reason delegation needs no exception in § 6:
 ```bash
 lcars-ech tier <unit-id> --tier T0|T1|T2 --why "<reason>"   # record the judgement
 lcars-ech delegate <unit-id>                                 # mint the brief
+lcars-ech beat <delegate-id> "<one line of progress>"         # one per step; no silent hours
 lcars-ech delegate close <delegate-id>                       # the delegate is done
 lcars-ech delegates                                          # the list
 ```

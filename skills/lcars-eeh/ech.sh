@@ -178,6 +178,13 @@ usage() {
                        the Mission's stage nor its verdict: nothing advances on a
                        delegate's word, and your own live check still runs
   delegates            id, unit, tier, status for every delegate in this repo
+  beat <delegate-id> "<one line of progress>"
+                       the delegate says WHERE IT GOT TO. One beat per step. It
+                       APPENDS (a beat never destroys an earlier one) and moves
+                       lastBeatAt, which is the ONLY clock the ECH has on a delegate:
+                       go longer than LCARS_ECH_BEAT_LIMIT (1800s) without one and
+                       `stalled` names it SILENT, with its unit, its tier and what to
+                       do about it. It is not a verdict and it advances nothing
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
   ask "<what>" --mission <m> [--why <w>] [--command <c>] [--rollback <r>]
                        raise a question YOURSELF (a product call, a scope change, a
@@ -838,6 +845,92 @@ CRONTAB_TIMEOUT="${LCARS_ECH_CRONTAB_TIMEOUT:-10}"
 # the SEAT's own idleness, and it is measured against a RECORDED start
 # (`waitingSince`) rather than reconstructed from a transcript.
 WAIT_LIMIT="${LCARS_ECH_WAIT_LIMIT:-1800}"
+
+# THE BOUND ON A DELEGATE'S SILENCE (S351), in the shape of WAIT_LIMIT above and
+# for the same reason. § 8's rule is that a wait has A LIMIT, A RE-CHECK AND AN
+# ACTION ON EXPIRY — and every mechanism that enforces it (`waitingSince`,
+# `await`, `watch`, `stalled`, `heartbeat`) guards A PROCESS THE ECH STARTED
+# ITSELF, decided from a RECORDED pid. A DELEGATE IS A MODEL IN SOMEBODY ELSE'S
+# WINDOW: there is no pid here to watch, so a delegate that produced nothing for
+# three hours was invisible to all of it. The beat is the one thing the ECH can
+# see, so the beat is what is bounded.
+#
+# IT BOUNDS A REPORT, NEVER A KILL. Nothing in this session kills anything: the
+# expiry of this limit prints a named delegate and three real verbs to pick from.
+# `cmd_await`, `watch_pid_live` and `driver_live` are untouched, and kill
+# discipline — only by recorded pid or its isolated process group — is unchanged.
+BEAT_LIMIT_DEFAULT=1800
+# A LIMIT NO DELEGATE CAN EVER CROSS IS AN OFF SWITCH, AND THIS MODE HAS NONE.
+# A year of silence cannot distinguish a working delegate from a dead one, so a
+# value past this ceiling is not a limit — and MEASURED on this box, it is also
+# past the shell's own arithmetic: `[ 999999999999999999999 -ge 60 ]` answers
+# FALSE (rc 1) rather than erroring, so an absurd value was applied, printed
+# itself as the limit in every report, and turned the watchdog off in silence.
+BEAT_LIMIT_CEILING=31536000
+# THE RAW VALUE AS THE OPERATOR SET IT, kept so every line can quote it.
+# `${VAR-}` and not `${VAR:-}`: an EMPTY value must stay distinguishable from an
+# unset one. The old form collapsed them, which is why `LCARS_ECH_BEAT_LIMIT=""`
+# was tolerated in silence — and an empty value is most plausibly a FAILED `$VAR`
+# substitution in a wrapper, i.e. the operator meant 300, got 1800, and was told
+# nothing. That is the same false green this guard exists for.
+BEAT_LIMIT_RAW="${LCARS_ECH_BEAT_LIMIT-}"
+BEAT_LIMIT_BAD=""
+BEAT_LIMIT_WHY=""
+BEAT_LIMIT="$BEAT_LIMIT_DEFAULT"
+#
+# AND IT IS VALIDATED WHERE IT LANDS, BUT IT DEGRADES — IT DOES NOT DIE (S351
+# fix round 1). Two failure modes are live here and BOTH are defects:
+#
+#   1. Measured while building it: `LCARS_ECH_BEAT_LIMIT=abc stalled` printed a
+#      Python traceback, said NOTHING about any delegate, and exited 0 — a
+#      silent false green in the one mechanism this limit exists to drive.
+#   2. Measured by a tester on the FIRST cure for (1), which was a top-level
+#      `die` before dispatch: in a repo with ZERO delegates — no `delegates` key
+#      at all — and one FAILED AND IDLE mission, `LCARS_ECH_BEAT_LIMIT=30m
+#      stalled` STOPPED REPORTING THE MISSION and exited 1, and `next`,
+#      `status`, `playbook`, `delegates`, `await` and `watch status` all died
+#      with it. `30m` is the single most likely thing a model types after
+#      reading the brief's own "a limit of 30 minutes between beats".
+#
+# A watchdog that answers "all quiet" because its own bound would not parse is
+# worse than no watchdog — and a watchdog whose bound takes out machinery that
+# has NOTHING to measure is worse again, because that machinery was already
+# trusted. So the invariant is: a malformed limit NEVER silences a report that
+# does not depend on it, NEVER changes `stalled`'s exit code (its own header
+# says it always exits 0: an hourly cron job that starts exiting 1 starts
+# mailing), and is NEVER silently treated as all-quiet. The mechanism that holds
+# all three at once is DEGRADE-AND-SAY-SO: fall back to the documented default,
+# so every delegate is still measured at a KNOWN limit, and put the problem in
+# front of the operator twice — once on stderr here, and once IN BAND in every
+# report line that applies the limit (`beat_limit_said`), because a stderr
+# warning can be dropped by a `2>/dev/null` wrapper while the report is kept.
+if [ -n "${LCARS_ECH_BEAT_LIMIT+set}" ]; then
+  case "$BEAT_LIMIT_RAW" in
+    '')
+      BEAT_LIMIT_BAD=1
+      BEAT_LIMIT_WHY="is EMPTY, which is not a whole number of seconds" ;;
+    *[!0-9]*)
+      BEAT_LIMIT_BAD=1
+      BEAT_LIMIT_WHY="is '$BEAT_LIMIT_RAW', which is not a whole number of seconds" ;;
+    *)
+      # THE LENGTH TEST COMES FIRST, on purpose: `-gt` on a 21-digit number is
+      # the very overflow this arm exists to catch, so it must not be the thing
+      # that catches it.
+      if [ "${#BEAT_LIMIT_RAW}" -gt 10 ] || [ "$BEAT_LIMIT_RAW" -gt "$BEAT_LIMIT_CEILING" ]; then
+        BEAT_LIMIT_BAD=1
+        BEAT_LIMIT_WHY="is '$BEAT_LIMIT_RAW', which is OUT OF RANGE: anything over ${BEAT_LIMIT_CEILING}s (a year) is an off switch for the watchdog rather than a limit, and this mode has no off switch"
+      else
+        # BASE TEN, STATED. `0300` is digits, and `$((0300 / 60))` is OCTAL in
+        # this shell — 3 minutes rather than 5. A limit that silently becomes a
+        # different number is the same defect as one that will not parse.
+        BEAT_LIMIT="$((10#$BEAT_LIMIT_RAW))"
+      fi ;;
+  esac
+fi
+if [ -n "$BEAT_LIMIT_BAD" ]; then
+  printf 'lcars ech: WARNING — LCARS_ECH_BEAT_LIMIT %s. IT WAS NOT APPLIED: the documented %ss default is in force instead, so every delegate is still measured at a known limit and every report that does not read this limit is untouched. This is a WARNING and not a refusal because the first version of this check WAS a refusal, and it silenced a failed-mission report in a repo with no delegates at all. Unset it for %ss, or set it to seconds (e.g. 3600).\n' \
+    "$BEAT_LIMIT_WHY" "$BEAT_LIMIT_DEFAULT" "$BEAT_LIMIT_DEFAULT" >&2
+fi
 
 # THE SENTINEL for question 2's default. It is a PHRASE, never a command, and it
 # is never written to `testCommand`: `push-gated` eval's that string, and a
@@ -2677,7 +2770,9 @@ cmd_watch() {
       return 0 ;;
   esac
   [ $# -eq 0 ] || die "watch: no limit; use watch without arguments"
-  local previous="" event plan sleeper="" m failure failures
+  local previous="" event plan sleeper="" m failure failures silents
+  local wtab; wtab="$(printf '\t')"
+  local wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wline
   local interval="${LCARS_ECH_WATCH_INTERVAL:-5}"
   case "$interval" in ''|*[!0-9.]*|.*|*.*.*) die "watch: invalid poll interval" ;; esac
   trap '[ -z "$sleeper" ] || { kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; }; exit 0' TERM INT HUP
@@ -2699,7 +2794,31 @@ cmd_watch() {
 "
       fi
     done
+    # A SILENT DELEGATE IS A WAKE, exactly as a failed-and-idle mission is
+    # (S351) — same witness loop, same `event` string, same `watch.log`.
+    silents=""
+    while IFS="$wtab" read -r wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wline; do
+      [ -n "${wdid:-}" ] || continue
+      [ "${wsilent:-0}" = "1" ] || continue
+      # THE EVENT CARRIES NO MINUTES, ON PURPOSE. `event` is compared against
+      # `previous` to decide whether this is NEWS; a figure that ticks every
+      # sixty seconds would re-wake the watcher once a minute for one standing
+      # problem, and a guard that fires on nothing new is a guard the operator
+      # learns to ignore. The RECORDED timestamp is stable, and `cmd_stalled`
+      # below — called here exactly as it is for a failed mission — is what
+      # prints the minutes, the limit and the action.
+      if [ "$wbasis" = "mint" ]; then
+        silents="${silents}silent delegate $wdid (unit $wunit, tier $wtier): never beat, minted $wsince
+"
+      else
+        silents="${silents}silent delegate $wdid (unit $wunit, tier $wtier): no beat since $wsince
+"
+      fi
+    done <<WATCH_SILENT_EOF
+$(delegate_beat_rows)
+WATCH_SILENT_EOF
     [ -z "$failures" ] || event="$failures"
+    [ -z "$silents" ] || event="${event}${silents}"
     if [ "$(slots_in_use)" -lt "$MAX_SLOTS" ]; then
       plan="$(build_plan)"
       event="${event}slot available
@@ -2707,7 +2826,7 @@ $plan"
     fi
     if [ -n "$event" ] && [ "$event" != "$previous" ]; then
       say "WAKE: $event"
-      [ -z "$failures" ] || cmd_stalled
+      [ -z "$failures$silents" ] || cmd_stalled
       cmd_next --all
     fi
     previous="$event"
@@ -3032,6 +3151,98 @@ SF_EOF
     # above now carries its own cure, so this says how many and gets out of the way.
     printf '%s mission(s) need attention — each line above names what clears it. Run `%s next` for the step.\n' \
       "$n" "$SELF_CMD"
+  fi
+
+  # --- AND NOW THE DELEGATES (S351). The same rule as the missions above and
+  # for the same measured reason: § 8's wait needs A LIMIT, A RE-CHECK AND AN
+  # ACTION ON EXPIRY. The difference is what is being watched — a mission has a
+  # recorded pid and a delegate has a recorded BEAT, and `delegate_beat_rows` is
+  # the one place that decides which of them is quiet.
+  #
+  # THEIR OWN TALLY, NOT `$n`. The footer above counts "mission(s)" and a
+  # delegate is not one. It also means that with NO delegates recorded this
+  # whole block emits nothing at all, which is what keeps the mission report
+  # byte-identical to the shipped one.
+  local dn=0 du=0 did dunit dtier dstat dmis delapsed dbasis dsilent dsince dline
+  local dlimit dlimitsrc duwhy
+  while IFS="$tab" read -r did dunit dtier dstat dmis delapsed dbasis dsilent dsince dlimit dlimitsrc dline; do
+    [ -n "${did:-}" ] || continue
+    [ "${dsilent:-0}" = "1" ] || continue
+    # --- THE UNTIMEABLE LANE (S351 fix round 1, D2). A delegate whose clock
+    # cannot be read is NOT a delegate that is quiet, and it is certainly not
+    # all-quiet — it is one the watchdog has no clock for, and it says exactly
+    # that instead of a number it does not have. Its own tally and its own
+    # actions: "re-brief, replace, raise with the captain" is the wrong list for
+    # a record that may have no unit and no mission to re-brief against.
+    case "$dbasis" in
+      broken|future|none)
+        case "$dbasis" in
+          broken) duwhy='its recorded beat timestamp CANNOT BE READ as a number, so it cannot be timed at all (`lastBeatAt` / `createdAt` in the record)' ;;
+          future) duwhy='its recorded beat timestamp (`lastBeatAt`) is IN THE FUTURE, so it cannot be timed: measuring against it would read as "it has just beat", which is a freshness this record cannot support. Either a clock is wrong or the record was written by hand' ;;
+          *)      duwhy='it has NO timestamp recorded at all — neither `lastBeatAt` nor `createdAt` — so it cannot be timed. The minter always writes `createdAt`, so this record has been edited or truncated since it was made' ;;
+        esac
+        du=$((du + 1))
+        printf 'UNTIMEABLE DELEGATE: %s (unit %s, tier %s, status %s) — %s.\n' \
+          "$did" "$dunit" "$dtier" "$dstat" "$duwhy"
+        printf '  → this is NOT all-quiet and it is NOT a verdict: nothing below is known about where it got to, which is the whole reason it is on this report.\n'
+        printf '  → what to do, and one of these three is the answer: ask it for ONE beat (`%s beat %s "<one line of progress>"`), which writes a fresh timestamp and clears this line; CLOSE it if it is gone (`%s delegate close %s`); or repair `delegates.%s` in `%s` by hand. A KILL IS NOT ON THAT LIST: the ECH has no pid for a delegate, and nothing in this report kills anything.\n' \
+          "$SELF_CMD" "$did" "$SELF_CMD" "$did" "$did" "$APJSON"
+        continue ;;
+    esac
+    dn=$((dn + 1))
+    # THE LIMIT IS NAMED AS THE ONE IT IS MEASURED AGAINST, not as one it "was
+    # held to" (S351 fix round 1, D3). A delegate minted under
+    # `LCARS_ECH_BEAT_LIMIT=300` was told 5 minutes in its own brief, and this
+    # line stated 1800s with total confidence — false for that delegate, and
+    # stated more confidently than a hedge would have been.
+    if [ "$dbasis" = "mint" ]; then
+      printf 'SILENT DELEGATE: %s (unit %s, tier %s) — it has NEVER beat, and it was minted %sm ago. The limit it is measured against: %s.\n' \
+        "$did" "$dunit" "$dtier" "$((delapsed / 60))" "$(beat_limit_said)"
+      printf '  → it has said nothing at all, so there is no "where it got to": assume it never started.\n'
+    else
+      printf 'SILENT DELEGATE: %s (unit %s, tier %s) — no beat for %sm. The limit it is measured against: %s.\n' \
+        "$did" "$dunit" "$dtier" "$((delapsed / 60))" "$(beat_limit_said)"
+      if [ -z "$dline" ]; then
+        # D5. A clock moved with no beat behind it — reachable through `record`
+        # and through a truncated write — used to print `its last words, which
+        # are where it got to: ""`. Empty quotes are not evidence, and the
+        # never-beat lane above already has the sentence that fits this shape.
+        printf '  → it has said nothing at all, so there is no "where it got to": its clock has moved but no beat was ever recorded behind it.\n'
+      else
+        # ITS LAST WORDS, QUOTED ON ONE LINE. `beat` refuses a multi-line line at
+        # the door and the row producer flattens tabs, so this cannot grow into a
+        # second paragraph that reads like a line of this report.
+        printf '  → its last words, which are where it got to: "%s"\n' "$dline"
+      fi
+    fi
+    # AND THE DIVERGENCE, STATED RATHER THAN RESOLVED (D3). The verdict above was
+    # reached against the limit in force; the delegate agreed to the one in its
+    # BRIEF.md. When they disagree, both are said — overwriting either would make
+    # this report state as fact something the record contradicts.
+    if [ "$dlimitsrc" = "brief" ] && [ "$dlimit" != "$BEAT_LIMIT" ]; then
+      printf '  ⚠ ITS BRIEF SAID SOMETHING ELSE: it was minted under a %s limit and its own BRIEF.md states that figure, so it agreed to a bound it is not being measured against. The limit named above is the one actually applied. Re-mint it under the limit you mean (`%s delegate close %s`, then `%s delegate %s`), or put LCARS_ECH_BEAT_LIMIT back to what it was briefed under.\n' \
+        "$(limit_brief_said "$dlimit")" "$SELF_CMD" "$did" "$SELF_CMD" "$dunit"
+    fi
+    # THE ACTION ON EXPIRY, WHICH IS THE HALF THAT KILLED FOUR SEAT MODELS OUT
+    # OF FOUR. "It is stuck" is not a report. Three real verbs, with this
+    # delegate's own ids already substituted in, and nothing to work out.
+    printf '  → what to do, and one of these three is the answer: RE-BRIEF it (hand it `.git/lcars/delegates/%s/BRIEF.md` again and tell it to beat every step); REPLACE it (`%s delegate close %s`, then `%s delegate %s` mints a fresh delegate beside it); or RAISE it with the captain (`%s ask "<what you need from him>" --mission %s`).\n' \
+      "$did" "$SELF_CMD" "$did" "$SELF_CMD" "$dunit" "$SELF_CMD" "$dmis"
+    printf '  → what clears this line: ONE beat — `%s beat %s "<one line of progress>"`. A KILL IS NOT ON THAT LIST: the ECH has no pid for a delegate, and nothing in this report kills anything.\n' \
+      "$SELF_CMD" "$did"
+  done <<DELEGATE_SILENCE_EOF
+$(delegate_beat_rows)
+DELEGATE_SILENCE_EOF
+  if [ "$dn" -gt 0 ]; then
+    printf '%s delegate(s) have gone quiet past the limit — each line above names the three things to pick from, and ONE beat clears it. `%s delegates` lists every delegate in this repo.\n' \
+      "$dn" "$SELF_CMD"
+  fi
+  # ITS OWN TALLY, for the same reason the delegates have one of their own: a
+  # record the watchdog cannot time is not a delegate that has gone quiet, and
+  # counting the two together would state a number that is true of neither.
+  if [ "$du" -gt 0 ]; then
+    printf '%s delegate record(s) CANNOT BE TIMED — that is a broken record, not an all-quiet, and each line above names what clears it.\n' \
+      "$du"
   fi
   return 0
 }
@@ -6117,7 +6328,7 @@ PYALLOC
   # mission record on disk at …" — so an unattended ECH reading its own record
   # saw a brief with a goal. A record that over-claims is worse than no record:
   # it is the one thing nothing downstream re-checks.
-  local parts="\"output-format\",\"verbs\",\"boundaries\",\"tier-contract\",\"summaries-only\",\"ech-gate\",\"workspace\",\"artifacts\""
+  local parts="\"output-format\",\"verbs\",\"boundaries\",\"tier-contract\",\"summaries-only\",\"ech-gate\",\"workspace\",\"artifacts\",\"beat\""
   [ "$gsrc" = "none" ] || parts="\"goal\",$parts"
   if [ "$tier" = "T2" ]; then
     parts="$parts,\"fresh-tester\",\"tester-deliverable\",\"t1-inherited\""
@@ -6159,6 +6370,29 @@ $wbase"
   delete it — it is somebody's hand-over) and run \`$SELF_CMD delegate $unit\`
   again."
 
+  # THE SILENCE LIMIT, STATED IN THE BRIEF ITSELF (S351). A delegate cannot obey
+  # a limit it was never told, and a brief minted under an overridden
+  # LCARS_ECH_BEAT_LIMIT must carry the limit IT was minted under rather than
+  # the default — otherwise the one thing the hand-off guarantees is wrong.
+  local blimit_mins blimit
+  if [ "$BEAT_LIMIT" -ge 60 ] 2>/dev/null; then
+    blimit_mins="$((BEAT_LIMIT / 60)) minutes"
+  else
+    blimit_mins="under a minute"
+  fi
+  blimit="**You are held to a limit of $blimit_mins between beats** (\`$BEAT_LIMIT\` seconds;
+the ECH sets it with \`LCARS_ECH_BEAT_LIMIT\`). Go longer than that without a beat and
+\`$SELF_CMD stalled\` — which the ECH's hourly heartbeat already runs — reports you as a
+**SILENT DELEGATE**, with your unit, your tier, how long you have been quiet and your last
+words, and tells the ECH to re-brief you, replace you, or raise it with the captain. **One
+beat clears that.**
+
+Nothing kills you: the ECH has no process of yours to kill, which is exactly why the beat
+is the only thing it can see. If a step is genuinely going to take longer than the limit,
+**beat anyway** and say that is what is happening — \"still running the suite, 20 minutes
+in\" is a beat, and it is the difference between a delegate that is working and one that
+is gone."
+
   local signoff="Minted by the ECH for unit **$unit** at tier **$tier**.
 The judgement is recorded at \`units.$unit\` in \`$APJSON\`; its reason was:
 *$why*
@@ -6175,11 +6409,12 @@ moves neither the Mission's stage nor its verdict."
   printf '%s\n' "$tpl" >"$tfile" || die "delegate: could not stage the template in $ddir"
   "$PY" - "$bpath" "$tfile" "$did" "$unit_i" "$tier" "$why" "$est" "$goal" "$mission" \
         "$statepath" "$contract" "$verbs" "$bounds" "$stamp" "$signoff" \
-        "$arts" "$wbase" "$tdeliver" <<'PYREND' \
+        "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" <<'PYREND' \
     || die "delegate: could not render the brief to $bpath"
 import sys
 (out, tfile, did, unit, tier, why, est, goal, mission, statepath,
- contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver) = sys.argv[1:19]
+ contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver, blimit,
+ launcher) = sys.argv[1:21]
 tpl = open(tfile).read()
 slots = {
     "DELEGATE_ID": did, "UNIT": unit, "TIER": tier, "TIER_WHY": why,
@@ -6193,6 +6428,12 @@ slots = {
     # D1 / D6 / D4. Each of these is composed by the caller, which rendered
     # every leaf value through `inert()` first.
     "ARTIFACTS": arts, "WORKSPACE": wbase, "TIER_DELIVERABLE": tdeliver,
+    # S351. Composed by the caller from BEAT_LIMIT, so the brief states the
+    # limit it was MINTED under and never a default it was not held to.
+    "BEAT_LIMIT": blimit,
+    # S351. The absolute launcher, so the beat command in § 2 is runnable as it
+    # stands rather than a placeholder the delegate has to go and resolve.
+    "LAUNCHER": launcher,
 }
 for k, v in slots.items():
     tpl = tpl.replace("{{%s}}" % k, v)
@@ -6202,9 +6443,9 @@ PYREND
   [ -s "$bpath" ] || die "delegate: the brief at $bpath came out empty — refusing to record a delegate whose brief says nothing."
 
   ap_lock
-  "$PY" - "$APJSON" "$did" "$unit" "$tier" "$bpath" "$at" "$parts" "$gsrc" "$mid" "$brel" <<'PY'
+  "$PY" - "$APJSON" "$did" "$unit" "$tier" "$bpath" "$at" "$parts" "$gsrc" "$mid" "$brel" "$BEAT_LIMIT" <<'PY'
 import json, os, sys
-f, did, unit, tier, bpath, at, parts, gsrc, mid, brel = sys.argv[1:11]
+f, did, unit, tier, bpath, at, parts, gsrc, mid, brel, blim = sys.argv[1:12]
 try:
     d = json.load(open(f))
 except Exception:
@@ -6225,6 +6466,13 @@ ds[did] = {"id": did, "unit": unit, "tier": tier, "briefPath": bpath,
            # WHERE THE GOAL CAME FROM, not left to be inferred (D1/D5):
            # prd-acceptance | prd-goal | state-title | none.
            "goalSource": gsrc,
+           # THE SILENCE LIMIT THIS BRIEF WAS STAMPED WITH (S351 fix round 1,
+           # D3). THE PRODUCER RECORDS THE FACT: `delegate` knows the limit it
+           # wrote into § 2 of the brief, and without this field the divergence
+           # between what a delegate was TOLD and what it is MEASURED against is
+           # undetectable on disk — which is how `stalled` came to state "the
+           # limit it was held to: 1800s" about a delegate briefed at 300.
+           "beatLimit": int(blim),
            # WHICH MISSION THE UNIT RESOLVED TO — a unit id is a milestone
            # label, so the mapping belongs in the record, not in a re-derivation.
            "mission": mid}
@@ -6432,6 +6680,310 @@ EOF
   say "A delegate's hand-back is a report, never a verdict — your own live check still runs."
 }
 
+# ==========================================================================
+# S351 — THE BEAT: no silent hours, for a delegate as much as for a driver
+# ==========================================================================
+# THE PRODUCER RECORDS THE FACT, AND THE READERS READ IT. `beat` writes
+# `lastBeatAt` at the moment a delegate reports; `stalled`, `watch` and `status`
+# all decide from that one record through the ONE function below. Nothing greps
+# watch.log, a brief, or `stalled`'s own output to work out whether a delegate
+# is quiet — that inference is the class of defect S147, S156 and S188 each
+# burned rounds on, and it is why `stalled` already decides from a recorded pid
+# rather than from a log.
+#
+# AND THE `done` RULE LIVES HERE, IN THE PRODUCER, not three times over in the
+# readers: a finished delegate is quiet because it finished, and reporting it
+# would train the ECH to ignore the one line that matters.
+
+# delegate_beat_rows → ONE TAB-SEPARATED ROW PER RECORDED DELEGATE:
+#
+#   id  unit  tier  status  mission  elapsed  basis  silent  since  lastLine
+#
+#   basis   beat    — `elapsed` is measured from `lastBeatAt`
+#           mint    — it has NEVER beat, so `elapsed` runs from `createdAt`
+#           broken  — a timestamp IS recorded and it will not parse as a number
+#           future  — a timestamp is recorded AHEAD of now, past the skew grace
+#           none    — neither timestamp is on disk at all
+#   silent  1 when the status is not `done` AND the delegate is either past
+#           $BEAT_LIMIT or UNTIMEABLE.
+#
+# AN UNTIMEABLE DELEGATE IS REPORTED, NOT SKIPPED (S351 fix round 1, D2). The
+# three untimeable bases above used to collapse into `none`, with `elapsed` -1
+# and `silent` 0 — reasoned as "a record with no clock cannot PROVE silence, and
+# a watchdog that guesses is one the operator learns to ignore". The reasoning
+# about guessing still holds and nothing below guesses an elapsed time; the
+# CONCLUSION was wrong. A tester recorded `lastBeatAt: "not-a-number"` and
+# `stalled` said NOTHING and exited 0 — which is the all-quiet false green one
+# delegate down, and the same argument this file's own BEAT_LIMIT guard makes.
+# So `silent` now means "report this one", `basis` says WHY, and the reader
+# prints a line that states what it does not know instead of a number it does
+# not have.
+#
+# A FUTURE TIMESTAMP IS THE SAME DEFECT WEARING THE OPPOSITE SIGN. `max(0, …)`
+# below turns one into `elapsed` 0, i.e. `beat=0m ago` — it does not merely omit
+# the delegate, it ASSERTS that it has just reported, which is the strongest
+# false green on this screen. A few seconds of skew between machines, or an NTP
+# step, is ordinary, so there is a GRACE and only a record past it is reported:
+# a day ahead is not skew.
+#
+# AND THE LIMIT THE DELEGATE WAS BRIEFED UNDER IS A COLUMN (D3). The minter
+# records `beatLimit`, so a delegate briefed under `LCARS_ECH_BEAT_LIMIT=300`
+# can be REPORTED against the figure its own BRIEF.md states instead of against
+# whatever is set now. The VERDICT is still decided by the limit in force —
+# changing that would silently re-open every delegate's verdict on a figure the
+# operator cannot see from the command line — so the row carries both, and the
+# reader states both when they disagree rather than overwriting either.
+#   limit     the seconds this delegate was BRIEFED under, when recorded
+#   limitsrc  brief — `delegates.<id>.beatLimit` was on disk
+#             env   — it was not (every pre-S351 record), so the limit in force
+#                     is reported, exactly as before
+# THE SKEW GRACE IS A CONSTANT, NOT A SEAM, and deliberately so. It was an env
+# read for one draft, and that draft opened the EXACT door this round is here to
+# close: an unvalidated `LCARS_ECH_BEAT_SKEW_GRACE=abc` would have reached
+# `int()` below, thrown inside a command substitution, produced NO rows, and
+# left every verb reporting all-quiet at exit 0. Nothing has asked to tune it,
+# and a seam nobody needs is a false green nobody is watching for.
+BEAT_SKEW_GRACE=300
+delegate_beat_rows() {
+  [ -f "$APJSON" ] || return 0
+  "$PY" - "$APJSON" "$(now)" "$BEAT_LIMIT" "$BEAT_SKEW_GRACE" <<'PY'
+import json, sys
+f, now, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+grace = int(sys.argv[4])
+try:
+    d = json.load(open(f))
+except Exception:
+    sys.exit(0)
+def flat(v):
+    # TABS AND NEWLINES ARE THE ROW FORMAT. `beat` refuses a multi-line line at
+    # the door, so this is the second line of defence for a hand-edited record.
+    return (v or "").replace("\t", " ").replace("\n", " ")
+def num(x):
+    return x if isinstance(x, int) and not isinstance(x, bool) else None
+for k in sorted((d.get("delegates") or {})):
+    v = (d.get("delegates") or {})[k]
+    if not isinstance(v, dict):
+        continue
+    status = v.get("status") or "-"
+    beats = v.get("beats")
+    beats = beats if isinstance(beats, list) else []
+    last = ""
+    for b in beats:
+        if isinstance(b, dict) and b.get("line"):
+            last = b["line"]
+    raw_lb, raw_cr = v.get("lastBeatAt"), v.get("createdAt")
+    lb, cr = num(raw_lb), num(raw_cr)
+    if lb is not None:
+        basis, since = "beat", lb
+    elif raw_lb is not None:
+        # A TIMESTAMP IS THERE AND IT WILL NOT PARSE. It is NOT the same as an
+        # absent one and must not be reported as one: `createdAt` is deliberately
+        # not fallen back to, because a beat that was recorded and cannot be read
+        # is a broken record, and timing it from the mint would hide that.
+        basis, since = "broken", None
+    elif cr is not None:
+        basis, since = "mint", cr
+    elif raw_cr is not None:
+        basis, since = "broken", None
+    else:
+        basis, since = "none", None
+    if since is not None and since - now > grace:
+        basis, since = "future", None
+    elapsed = -1 if since is None else max(0, now - since)
+    # THE LIMIT THIS DELEGATE WAS BRIEFED UNDER, from the record the MINTER
+    # wrote. A negative or non-integer one is treated as absent rather than
+    # applied: this column is quoted back at the operator as a fact.
+    dl = num(v.get("beatLimit"))
+    if dl is None or dl < 0:
+        dl, dlsrc = limit, "env"
+    else:
+        dlsrc = "brief"
+    if status == "done":
+        # THE `done` RULE IS UNCHANGED and still lives here, in the producer: a
+        # finished delegate is quiet because it finished.
+        silent = 0
+    elif basis in ("beat", "mint"):
+        silent = 1 if elapsed >= limit else 0
+    else:
+        silent = 1
+    print("\t".join([k, flat(v.get("unit")) or "-", flat(v.get("tier")) or "-",
+                     status, flat(v.get("mission")) or "-", str(elapsed),
+                     basis, str(silent),
+                     str(since) if since is not None else "-",
+                     str(dl), dlsrc, flat(last)]))
+PY
+}
+
+# beat_limit_said → the limit in the words a report uses.
+#
+# AN OVERRIDDEN LIMIT IS NEVER SILENT. The number ACTUALLY APPLIED is printed by
+# every line that applies it, together with the variable that changed it, so a
+# verdict reached under `LCARS_ECH_BEAT_LIMIT=300` can never be read back as the
+# default's. The minutes are omitted below a minute rather than printed as `0m`.
+beat_limit_said() {
+  if [ -n "$BEAT_LIMIT_BAD" ]; then
+    # A REJECTED OVERRIDE IS STATED IN BAND (S351 fix round 1). The stderr
+    # warning at the top of this file is the operator's first notice, and a
+    # `2>/dev/null` wrapper can drop it while keeping the report — so the line
+    # that APPLIES the limit says which limit it applied and why, which is the
+    # same rule as the one above it: never print a figure the reader could
+    # mistake for the one they set.
+    printf '%ss (%sm) — the DEFAULT, because LCARS_ECH_BEAT_LIMIT was REJECTED: it %s' \
+      "$BEAT_LIMIT" "$((BEAT_LIMIT / 60))" "$BEAT_LIMIT_WHY"
+  elif [ "$BEAT_LIMIT" -ge 60 ] 2>/dev/null; then
+    printf '%ss (%sm, LCARS_ECH_BEAT_LIMIT)' "$BEAT_LIMIT" "$((BEAT_LIMIT / 60))"
+  else
+    printf '%ss (LCARS_ECH_BEAT_LIMIT)' "$BEAT_LIMIT"
+  fi
+}
+
+# limit_brief_said <secs> → a limit in the words the BRIEF states it in (S351
+# fix round 1, D3). § 2 of a minted brief leads with minutes — "a limit of 30
+# minutes between beats" — so the figure quoted back to the operator when a
+# delegate's brief and the limit in force disagree is the one the delegate was
+# actually told to act on, not a second seconds-figure beside the first.
+limit_brief_said() {
+  if [ "${1:-0}" -ge 60 ] 2>/dev/null; then
+    printf '%sm' "$(( ${1:-0} / 60 ))"
+  else
+    printf '%ss' "${1:-0}"
+  fi
+}
+
+# ==========================================================================
+# beat — the delegate says where it got to
+# ==========================================================================
+# IT APPENDS, like the questions ledger. The SEQUENCE of beats is the evidence
+# of how a delegate spent its hours, so a beat never destroys an earlier one: a
+# single-slot version of this record is precisely the defect `.pending` was, and
+# `delegate close`'s own refusal exists for the same reason.
+#
+# IT RECORDS NOTHING ELSE. A beat is not a verdict, not a stage, not a hand-back
+# and not a close. It moves the delegate's clock and nothing more.
+cmd_beat() {
+  local did="" line="" line_set=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -*)
+        die "beat: '$1' is not an argument this verb has, and it will not be ignored. A beat is two things and nothing else: WHICH delegate, and ONE line of what it just did. It carries no verdict and no flags. Usage: \`$SELF_CMD beat <delegate-id> \"<one line of progress>\"\`."
+        ;;
+      *)
+        if [ -z "$did" ]; then
+          did="$1"
+        elif [ "$line_set" = 0 ]; then
+          line="$1"; line_set=1
+        else
+          die "beat: one beat per call — you gave $did a second line ('$1'). Only the first would have been recorded and the rest silently dropped, which is worse than a refusal in a ledger whose whole value is being complete. Beat once per step: \`$SELF_CMD beat $did \"<one line>\"\`."
+        fi
+        shift ;;
+    esac
+  done
+  [ -n "$did" ] || die "beat: usage is \`$SELF_CMD beat <delegate-id> \"<one line of progress>\"\` — the delegate id comes first, and the ids come from \`$SELF_CMD delegates\`."
+  require_state
+
+  # EVERY REFUSAL HAPPENS BEFORE ANY WRITE (the `tier` rule). A half-recorded
+  # beat is worse than none: later it reads as progress somebody actually made.
+  local known; known="$(ap_keys delegates)"
+  if ! printf '%s\n' "$known" | grep -qxF -- "$did"; then
+    local inline; inline="$(printf '%s' "$known" | tr '\n' ' ')"
+    die "beat: no delegate $did in $APJSON — nothing was recorded. Known delegates: ${inline:-none}. \`$SELF_CMD delegates\` lists them with their units and tiers; \`$SELF_CMD delegate <unit>\` mints one. A beat against an id that does not exist would otherwise create a delegate nobody minted and no brief backs."
+  fi
+
+  # A BLANK BEAT IS THE SAME SHRUG AS NO BEAT (D3's rule, same house style as
+  # `tier --why`). Tabs and newlines count as whitespace here too.
+  local trimmed; trimmed="$(printf '%s' "$line" | tr -d ' \t\n\r')"
+  if [ "$line_set" = 0 ] || [ -z "$trimmed" ]; then
+    die "beat: the line of progress is required and may not be blank — \`$SELF_CMD beat $did \"<one line of what you just did>\"\`. An empty beat proves a delegate is alive and says nothing about whether it is getting anywhere, and \`$SELF_CMD stalled\` prints this line back to the ECH as *where it got to*."
+  fi
+  # A MULTI-LINE BEAT IS REFUSED AT THE DOOR (D2's rule). The reason is the same
+  # one that refuses a multi-line `--why`: the value goes into a permanent record
+  # that `status` and `stalled` each print on ONE line, and a multi-line value
+  # printed back into the ECH's own report can forge a line of that report — a
+  # `--why` whose second paragraph began `## 5.` once forged a copy of a brief's
+  # verification section saying to skip the live check. Say the step in one line.
+  if [ "$(printf '%s' "$line" | wc -l | tr -d ' ')" != "0" ]; then
+    die "beat: a beat must be ONE line — this one has a newline in it. It goes into a permanent append-only ledger that \`$SELF_CMD status\` and \`$SELF_CMD stalled\` each print on a single line, and a multi-line value printed back into the ECH's own report can forge a line of that report. Say the step in one line; the detail belongs in the hand-back."
+  fi
+
+  # THE RECORD IS READ BY ITS EXACT KEY, never through a dotted path: a delegate
+  # id is a plain dict key, and a hand-edited record could hold one with a dot
+  # in it that a dotted read would re-split.
+  local tab drec dunit dstatus
+  tab="$(printf '\t')"
+  drec="$("$PY" - "$APJSON" "$did" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+r = (d.get("delegates") or {}).get(sys.argv[2]) or {}
+sys.stdout.write("%s\t%s" % (r.get("unit") or "-", r.get("status") or "-"))
+PY
+)"
+  dunit="${drec%%"$tab"*}"
+  dstatus="${drec##*"$tab"}"
+
+  local at; at="$(now)"
+  ap_lock
+  "$PY" - "$APJSON" "$did" "$line" "$at" <<'PY'
+import json, os, sys
+f, did, line, at = sys.argv[1:5]
+d = json.load(open(f))
+ds = d.get("delegates") or {}
+rec = ds.get(did)
+if not isinstance(rec, dict):
+    sys.exit(3)
+beats = rec.get("beats")
+if not isinstance(beats, list):
+    beats = []
+# APPEND. Nothing already recorded is touched — the questions-ledger rule.
+beats.append({"at": int(at), "line": line})
+rec["beats"] = beats
+# AND THE DERIVED MIRROR, which is what the watchdog compares against now().
+# It is written here, by the producer, and never hand-written: `pending` taught
+# this project what a field that is storage in one path and a mirror in another
+# costs.
+rec["lastBeatAt"] = int(at)
+ds[did] = rec
+d["delegates"] = ds
+tmp = f + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as fh:
+    json.dump(d, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, f)
+PY
+  local rc=$?
+  ap_unlock
+  [ "$rc" = 0 ] || die "beat: could not write $APJSON — the beat was NOT recorded, so \`$SELF_CMD stalled\` will go on counting $did quiet. Repair that file before you rely on the watchdog."
+
+  local nb
+  nb="$("$PY" - "$APJSON" "$did" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+r = (d.get("delegates") or {}).get(sys.argv[2]) or {}
+b = r.get("beats")
+sys.stdout.write(str(len(b)) if isinstance(b, list) else "?")
+PY
+)"
+  say "BEAT recorded: $did (unit $dunit) — \"$line\""
+  say "  beat #$nb at $at. The ledger APPENDS: every earlier beat is still on disk."
+  say "  the limit it is held to: $(beat_limit_said). One beat per step is what keeps"
+  say "    \`$SELF_CMD stalled\` quiet about $did."
+  # A BEAT ON A CLOSED DELEGATE IS KEPT, AND SAID OUT LOUD. It is not refused:
+  # it is a true fact, and this ledger appends true facts. But it buys nothing —
+  # a `done` delegate was never being counted quiet — so the one thing the
+  # caller probably wants is named instead of left to be discovered.
+  if [ "$dstatus" = "done" ]; then
+    say "NOTE: $did is already CLOSED (status done), so the watchdog was not counting it"
+    say "  quiet and this beat changes no verdict. If there is more work on $dunit that is"
+    say "  a NEW delegate: \`$SELF_CMD delegate $dunit\`."
+  fi
+  return 0
+}
+
 # delegation_status_lines — the two lines `status` gains. Read-only.
 delegation_status_lines() {
   local tiers
@@ -6450,24 +7002,51 @@ sys.stdout.write("  ".join(out))
 PY
 )"
   say "  tiers:     ${tiers:-none}"
-  local dl
-  dl="$("$PY" - "$APJSON" <<'PY'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-out = []
-for k in sorted((d.get("delegates") or {})):
-    v = (d.get("delegates") or {})[k]
-    if isinstance(v, dict):
-        out.append("%s(unit=%s tier=%s %s)" % (k, v.get("unit") or "-",
-                                               v.get("tier") or "-",
-                                               v.get("status") or "-"))
-sys.stdout.write("  ".join(out))
-PY
-)"
+  # THE DELEGATES LINE, EXTENDED RATHER THAN DOUBLED (S351). It gains the one
+  # thing the watchdog cares about — HOW LONG SINCE THIS DELEGATE SAID ANYTHING
+  # — and it is still one line, read from `delegate_beat_rows` so the screen and
+  # `stalled` cannot disagree about who is quiet. A third line would have been a
+  # second place to look.
+  local dl="" stab sid sunit stier sstat smis selapsed sbasis ssilent ssince sline beatsaid
+  local slimit slimitsrc
+  stab="$(printf '\t')"
+  while IFS="$stab" read -r sid sunit stier sstat smis selapsed sbasis ssilent ssince slimit slimitsrc sline; do
+    [ -n "${sid:-}" ] || continue
+    case "$sbasis" in
+      beat) beatsaid="beat=$((selapsed / 60))m ago" ;;
+      mint) beatsaid="beat=never, minted $((selapsed / 60))m ago" ;;
+      # NOT A NUMBER WE DO NOT HAVE. A record with no timestamp in it is named
+      # as such rather than printed as `0m ago`, which would read as a delegate
+      # that has just reported.
+      #
+      # AND THE TWO BROKEN SHAPES ARE NAMED APART (S351 fix round 1, D2): a
+      # timestamp that will not parse and one that is in the future are both
+      # UNTIMEABLE, but they are different repairs, and `stalled` reports each
+      # in its own words. `0m ago` for a future one would have been the worst of
+      # the three — an assertion of freshness the record cannot support.
+      broken) beatsaid="beat=UNTIMEABLE (its timestamp cannot be read)" ;;
+      future) beatsaid="beat=UNTIMEABLE (its timestamp is in the future)" ;;
+      *)    beatsaid="beat=unknown (no timestamp recorded)" ;;
+    esac
+    # THE FLAG IS NOT APPENDED TO A RECORD THAT CANNOT BE TIMED (S351 fix round
+    # 1, D2). `silent` is "report this one", and for the two untimeable bases
+    # `beatsaid` above is already the flag — appending `SILENT` as well would
+    # assert a silence this record cannot prove, which is the very thing the
+    # untimeable lane exists to stop the report doing.
+    case "$sbasis" in
+      broken|future) : ;;
+      *) [ "${ssilent:-0}" = "1" ] && beatsaid="$beatsaid SILENT" ;;
+    esac
+    dl="${dl:+$dl  }$sid(unit=$sunit tier=$stier $sstat $beatsaid)"
+  done <<STATUS_DELEGATES_EOF
+$(delegate_beat_rows)
+STATUS_DELEGATES_EOF
   say "  delegates: ${dl:-none}"
+  # THE LIMIT IS STATED BESIDE THE DELEGATES IT WAS APPLIED TO, and only when
+  # there are any: an overridden limit must never be invisible, and an extra
+  # line on a repo with no delegates would be noise — and would break the
+  # screen's byte-identity with the shipped one.
+  [ -z "$dl" ] || say "    silence limit: $(beat_limit_said) — one \`$SELF_CMD beat <id> \"<line>\"\` clears a SILENT flag"
 }
 
 
@@ -6488,6 +7067,7 @@ case "$SUB" in
   tier)        cmd_tier "$@" ;;
   delegate)    cmd_delegate "$@" ;;
   delegates)   cmd_delegates "$@" ;;
+  beat)        cmd_beat "$@" ;;
   grant)       cmd_grant "$@" ;;
   answered)    cmd_answered "$@" ;;
   ask)         cmd_ask "$@" ;;

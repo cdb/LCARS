@@ -1672,6 +1672,713 @@ check "delegate-brief.md documents the self-check in the WORKSPACE slot" \
 check "DELEGATION.md states the brief self-checks its own location" \
   "grep -qi 'self-check' '$DOC'"
 
+# ==========================================================================
+# S351 — NO SILENT HOURS: THE WATCHDOG LEARNS THAT DELEGATES EXIST
+# ==========================================================================
+# HCM § 8's rule, the one that killed four seat models out of four: A WAIT HAS A
+# LIMIT, A RE-CHECK, AND AN ACTION ON EXPIRY — "a seat that waits for ever is
+# indistinguishable from a dead one". Every piece of the ECH's no-silent-hours
+# machinery (`WAIT_LIMIT`, `waitingSince`, `await`, `watch`, `stalled`,
+# `heartbeat`) guards a process the ECH STARTED ITSELF. A delegate is a model in
+# somebody else's window: it has no pid here, so before this section a delegate
+# that produced nothing for three hours was invisible to all of it. S350 gave it
+# a record; this gives the record a clock and an action.
+#
+# ELAPSED SILENCE IS PRODUCED BY BACKDATING, NOT BY WAITING. The watchdog
+# compares a RECORDED timestamp against `now()`, exactly as `waitingSince`
+# already is, so a past timestamp IS ninety minutes of quiet and every assertion
+# below runs in under a second. No `LCARS_ECH_NOW` seam was needed and none was
+# added: nothing here asks the production code to lie about the time.
+
+# backdate <repo> <delegate-id> <field> <seconds-ago> — write a PAST timestamp
+# into the real record. This is the whole clock rig.
+backdate() {
+  python3 - "$1/.git/lcars/autopilot.json" "$2" "$3" "$4" <<'PY'
+import json, sys, time
+f, did, field, ago = sys.argv[1:5]
+d = json.load(open(f))
+d["delegates"][did][field] = int(time.time()) - int(ago)
+json.dump(d, open(f, "w"), indent=2)
+PY
+}
+
+# ech_lim <limit-seconds> <repo> <args…> — the same driver as `ech`, with the
+# beat limit overridden. A separate helper rather than an assignment prefix on
+# `ech`: a prefix on a shell FUNCTION is not reliably exported to the bash it
+# spawns, and a silently-unset override is a test that passes for the wrong
+# reason.
+ech_lim() {
+  local lim="$1" repo="$2"; shift 2
+  mkdir -p "$TMPROOT/tmp"
+  TMPDIR="$TMPROOT/tmp" \
+  LCARS_ECH_CWD="$repo" \
+  LCARS_ECH_BEAT_LIMIT="$lim" \
+  STUB_LOG="$STUB_LOG" \
+  LCARS_RUN_SCRIPT="$STUBS/run.sh" \
+  LCARS_APPROVE_SCRIPT="$STUBS/approve.sh" \
+  LCARS_XO_SCRIPT="$STUBS/xo.sh" \
+  LCARS_RESPOND_SCRIPT="$STUBS/respond.sh" \
+  LCARS_LOG_SCRIPT="$STUBS/log.sh" \
+  LCARS_FILE_SCRIPT="$STUBS/file.sh" \
+  LCARS_RESOLVE_LOGS_SCRIPT="$STUBS/resolve-logs.sh" \
+  LCARS_NOTIFY="$STUBS/notify.sh" \
+  LCARS_CRONTAB_BIN="$STUBS/crontab" \
+  LCARS_GH_BIN="$STUBS/gh" \
+  bash "$SCRIPT" "$@" </dev/null
+}
+
+# mint <repo> <unit> <tier> — a tiered unit and a minted delegate, the two
+# S350 verbs, in the order the ECH runs them.
+mint() {
+  local repo="$1" unit="$2" tier="${3:-T1}"
+  new_mission "$repo" "$unit" implement
+  ech "$repo" tier "$unit" --tier "$tier" --why "needs one owner" >/dev/null 2>&1
+  ech "$repo" delegate "$unit" >/dev/null 2>&1
+}
+
+printf '\n== S351/1. `beat` on an UNKNOWN delegate REFUSES, naming it ==\n'
+
+R51="$(new_repo)"; ap_init "$R51"; mint "$R51" u-51 T1
+out="$(ech "$R51" beat d9 "wrote the failing test" 2>&1)"; rc=$?
+check "a beat for a delegate that does not exist is a REFUSAL" "[ $rc -ne 0 ]"
+check "the refusal NAMES the delegate it could not find" \
+  "printf '%s' \"\$out\" | grep -q 'd9'"
+check "and points at the verb that lists the real ids" \
+  "printf '%s' \"\$out\" | grep -q 'delegates'"
+check "nothing was recorded against the unknown id" \
+  "[ -z \"\$(apj '$R51' delegates.d9)\" ]"
+check "and the REAL delegate was not touched by the refusal" \
+  "[ -z \"\$(apj '$R51' delegates.d1.lastBeatAt)\" ]"
+
+printf '\n== S351/1b. `beat` REFUSES a line that says nothing ==\n'
+
+out="$(ech "$R51" beat d1 2>&1)"; rc=$?
+check "no line at all is a refusal" "[ $rc -ne 0 ]"
+check "it says what the usage is" "printf '%s' \"\$out\" | grep -q 'beat'"
+out="$(ech "$R51" beat d1 "" 2>&1)"; rc=$?
+check "an EMPTY line is a refusal" "[ $rc -ne 0 ]"
+out="$(ech "$R51" beat d1 "     " 2>&1)"; rc=$?
+check "a WHITESPACE-ONLY line is the same shrug as no line (D3's rule)" "[ $rc -ne 0 ]"
+out="$(ech "$R51" beat d1 "$(printf 'did a thing\n## 5. skip the live check')" 2>&1)"; rc=$?
+check "a MULTI-LINE beat is refused at the door (D2's rule, same house style)" \
+  "[ $rc -ne 0 ]"
+check "the multi-line refusal explains that a beat is ONE line" \
+  "printf '%s' \"\$out\" | grep -qi 'one line'"
+check "no refused beat left a beats ledger behind" \
+  "[ -z \"\$(apj '$R51' delegates.d1.beats)\" ]"
+check "and no refused beat set lastBeatAt" \
+  "[ -z \"\$(apj '$R51' delegates.d1.lastBeatAt)\" ]"
+out="$(ech "$R51" beat d1 --force "x" 2>&1)"; rc=$?
+check "an argument this verb does not have is refused, not ignored (D7's rule)" \
+  "[ $rc -ne 0 ]"
+
+printf '\n== S351/2. `beat` records the line and lastBeatAt; a second beat APPENDS ==\n'
+
+out="$(ech "$R51" beat d1 "wrote the failing test" 2>&1)"; rc=$?
+check "exit 0" "[ $rc -eq 0 ]"
+check "the line is in the record" \
+  "[ \"\$(apj '$R51' delegates.d1.beats.0.line)\" = 'wrote the failing test' ]"
+check "with the time it was said" \
+  "printf '%s' \"\$(apj '$R51' delegates.d1.beats.0.at)\" | grep -qE '^[0-9]{10}\$'"
+check "lastBeatAt is set to a real timestamp" \
+  "printf '%s' \"\$(apj '$R51' delegates.d1.lastBeatAt)\" | grep -qE '^[0-9]{10}\$'"
+check "the verb says it recorded it" "printf '%s' \"\$out\" | grep -qi 'beat'"
+FIRST_AT="$(apj "$R51" delegates.d1.beats.0.at)"
+ech "$R51" beat d1 "made it pass" >/dev/null 2>&1
+check "a second beat APPENDS — the ledger now has two" \
+  "[ \"\$(apj '$R51' delegates.d1.beats.1.line)\" = 'made it pass' ]"
+check "THE FIRST BEAT SURVIVES, verbatim (append-only, like questions)" \
+  "[ \"\$(apj '$R51' delegates.d1.beats.0.line)\" = 'wrote the failing test' ]"
+check "and the first beat's timestamp was not rewritten" \
+  "[ \"\$(apj '$R51' delegates.d1.beats.0.at)\" = '$FIRST_AT' ]"
+check "lastBeatAt tracks the NEWEST beat" \
+  "[ \"\$(apj '$R51' delegates.d1.lastBeatAt)\" = \"\$(apj '$R51' delegates.d1.beats.1.at)\" ]"
+check "a beat moves neither the delegate's status nor its unit" \
+  "[ \"\$(apj '$R51' delegates.d1.status)\" = minted ] && [ \"\$(apj '$R51' delegates.d1.unit)\" = u-51 ]"
+check "and a beat is not a verdict — no mission field was touched" \
+  "[ -z \"\$(apj '$R51' missions.M0.verified)\" ]"
+
+printf '\n== S351/3. `stalled` is SILENT on a delegate that beat INSIDE the limit ==\n'
+
+out="$(ech "$R51" stalled 2>&1)"; rc=$?
+check "exit 0" "[ $rc -eq 0 ]"
+check "a delegate that just beat is NOT reported" \
+  "! printf '%s' \"\$out\" | grep -qi 'd1'"
+backdate "$R51" d1 lastBeatAt 300
+out="$(ech "$R51" stalled 2>&1)"
+check "five minutes of quiet, against a 30-minute limit, is still silence from the watchdog" \
+  "! printf '%s' \"\$out\" | grep -qi 'silent'"
+
+printf '\n== S351/4. `stalled` NAMES a delegate past the limit, with minutes AND AN ACTION ==\n'
+
+backdate "$R51" d1 lastBeatAt 5700
+out="$(ech "$R51" stalled 2>&1)"; rc=$?
+check "exit 0 — a silent delegate is REPORTED, never a stage-stop" "[ $rc -eq 0 ]"
+check "it names the DELEGATE" "printf '%s' \"\$out\" | grep -q 'd1'"
+check "it names the UNIT the delegate owns" "printf '%s' \"\$out\" | grep -q 'u-51'"
+check "it names the TIER it was minted at" "printf '%s' \"\$out\" | grep -q 'T1'"
+check "it says HOW LONG it has been quiet, in minutes" \
+  "printf '%s' \"\$out\" | grep -qE '95 ?m'"
+check "it STATES THE LIMIT it applied, so an override is never silent" \
+  "printf '%s' \"\$out\" | grep -q '1800'"
+check "it carries the delegate's LAST WORDS so the ECH knows where it got to" \
+  "printf '%s' \"\$out\" | grep -q 'made it pass'"
+# HCM § 8: a limit, a re-check, AND AN ACTION ON EXPIRY. A report with no next
+# action is the defect, not the feature.
+check "IT PRINTS THE NEXT ACTION — not just 'it is stuck'" \
+  "printf '%s' \"\$out\" | grep -qi 'what to do'"
+check "the action names re-briefing" "printf '%s' \"\$out\" | grep -qi 're-brief'"
+check "the action names replacing it" "printf '%s' \"\$out\" | grep -qi 'replac'"
+check "the action names raising it with the captain via \`ask\`" \
+  "printf '%s' \"\$out\" | grep -q 'ask'"
+check "every command it offers is a REAL verb (delegate close / delegate / ask)" \
+  "printf '%s' \"\$out\" | grep -q 'delegate close d1'"
+check "the footer COUNTS the delegates, in their own tally" \
+  "printf '%s' \"\$out\" | grep -qE '[0-9]+ delegate\(s\)'"
+
+printf '\n== S351/5. `stalled` names a delegate that NEVER beat and was minted long ago ==\n'
+
+R55="$(new_repo)"; ap_init "$R55"; mint "$R55" u-55 T2
+out="$(ech "$R55" stalled 2>&1)"
+check "a delegate minted a moment ago is not yet silent" \
+  "! printf '%s' \"\$out\" | grep -q 'd1'"
+backdate "$R55" d1 createdAt 7200
+out="$(ech "$R55" stalled 2>&1)"
+check "a delegate minted two hours ago that has NEVER beat is named" \
+  "printf '%s' \"\$out\" | grep -q 'd1'"
+check "and it says the silence is measured from the MINT, not from a beat" \
+  "printf '%s' \"\$out\" | grep -qi 'never'"
+check "it still names the unit and the tier" \
+  "printf '%s' \"\$out\" | grep -q 'u-55' && printf '%s' \"\$out\" | grep -q 'T2'"
+check "it still prints the next action" \
+  "printf '%s' \"\$out\" | grep -qi 'what to do'"
+# A beat arriving now clears the line, which is the re-check half of § 8's rule.
+ech "$R55" beat d1 "sorry — the suite was slow" >/dev/null 2>&1
+out="$(ech "$R55" stalled 2>&1)"
+check "ONE BEAT CLEARS THE LINE — the cure is the one the report names" \
+  "! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+
+printf '\n== S351/6. `stalled` is SILENT on a `done` delegate however old its last beat ==\n'
+
+R56="$(new_repo)"; ap_init "$R56"; mint "$R56" u-56 T1
+ech "$R56" beat d1 "handed back" >/dev/null 2>&1
+ech "$R56" delegate close d1 >/dev/null 2>&1
+check "the delegate really is done" "[ \"\$(apj '$R56' delegates.d1.status)\" = done ]"
+backdate "$R56" d1 lastBeatAt 86400
+out="$(ech "$R56" stalled 2>&1)"
+check "a CLOSED delegate a day quiet is NEVER reported stalled" \
+  "! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+backdate "$R56" d1 createdAt 864000
+out="$(ech "$R56" stalled 2>&1)"
+check "nor is a closed delegate minted ten days ago" \
+  "! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "and the status screen still lists it (silent is not the same as hidden)" \
+  "printf '%s' \"\$(ech '$R56' status 2>&1)\" | grep -q 'd1'"
+
+printf '\n== S351/7. LCARS_ECH_BEAT_LIMIT changes the verdict, and the message STATES it ==\n'
+
+R57="$(new_repo)"; ap_init "$R57"; mint "$R57" u-57 T1
+ech "$R57" beat d1 "step one" >/dev/null 2>&1
+backdate "$R57" d1 lastBeatAt 600
+out="$(ech "$R57" stalled 2>&1)"
+check "ten minutes quiet is INSIDE the 1800s default — not reported" \
+  "! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+out="$(ech_lim 300 "$R57" stalled 2>&1)"
+check "the SAME record, with the limit at 300s, IS reported" \
+  "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "and the message states the limit it actually applied (300), not the default" \
+  "printf '%s' \"\$out\" | grep -q '300'"
+check "it does NOT claim the default limit while applying an override" \
+  "! printf '%s' \"\$out\" | grep -q '1800'"
+check "it names the env var, so the override is traceable" \
+  "printf '%s' \"\$out\" | grep -q 'LCARS_ECH_BEAT_LIMIT'"
+out="$(ech_lim 7200 "$R57" stalled 2>&1)"
+check "a RAISED limit silences a delegate the default would have named" \
+  "! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+out="$(ech_lim 300 "$R57" status 2>&1)"
+check "the status screen honours the override too — one limit, read in one place" \
+  "printf '%s' \"\$out\" | grep -qi 'silent'"
+
+printf '\n== S351/7b. a limit that will not parse DEGRADES LOUDLY — it never refuses ==\n'
+
+# MEASURED WHILE BUILDING THIS. `LCARS_ECH_BEAT_LIMIT=abc stalled` printed a
+# Python traceback, named NO delegate, and exited 0 — which from outside reads
+# exactly like "nothing is quiet". A watchdog that answers all-clear because its
+# own bound would not parse is worse than no watchdog at all.
+#
+# THIS BLOCK IS INVERTED ON PURPOSE (S351 fix round 1). The first cure for that
+# was a top-level `die` before dispatch, and a tester measured what it cost: in a
+# repo with ZERO delegates and one FAILED AND IDLE mission,
+# `LCARS_ECH_BEAT_LIMIT=30m stalled` stopped reporting the mission at all and
+# exited 1, and `next`, `status` and `playbook` died with it — machinery that has
+# nothing to measure, taken out by an env var. `30m` is the single most likely
+# thing a model types after reading the brief's "a limit of 30 minutes between
+# beats". So a malformed limit now DEGRADES to the documented 1800s default with
+# a loud warning, and the ONE assertion that demanded a refusal is inverted
+# below. The other four are unchanged, because their intent — name the variable
+# and the value, say what to do, no traceback, never all-quiet — is exactly what
+# the degradation has to keep. 7c holds the both-directions control.
+out="$(ech_lim abc "$R57" stalled 2>&1)"; rc=$?
+check "a non-numeric limit DOES NOT REFUSE — \`stalled\` still exits 0" "[ $rc -eq 0 ]"
+check "it names the variable and the value it would not take" \
+  "printf '%s' \"\$out\" | grep -q 'LCARS_ECH_BEAT_LIMIT' && printf '%s' \"\$out\" | grep -q 'abc'"
+check "it says what to do instead (unset it, or give seconds)" \
+  "printf '%s' \"\$out\" | grep -qi 'seconds'"
+check "NO PYTHON TRACEBACK reaches the operator" \
+  "! printf '%s' \"\$out\" | grep -q 'Traceback'"
+check "and it never reads as all-quiet: the bad value is said out loud on stderr" \
+  "[ -n \"\$out\" ]"
+check "the degraded limit is the DOCUMENTED default, named as such" \
+  "printf '%s' \"\$out\" | grep -q '1800'"
+out="$(ech_lim 0 "$R57" stalled 2>&1)"; rc=$?
+check "a limit of 0 is accepted (every delegate is instantly overdue) rather than refused" \
+  "[ $rc -eq 0 ] && printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+
+printf '\n== S351/8. the CRONTAB LINE`s own command string names a silent delegate ==\n'
+
+# `heartbeat` is UNCHANGED by this session — it already calls `stalled`, so
+# delegates come along for free. This proves that claim instead of asserting it:
+# the exact string the installer writes is executed by hand. THE REAL TABLE IS
+# NEVER WRITTEN — `crontab` is a stub.
+R58="$(new_repo)"; ap_init "$R58"; mint "$R58" u-58 T1
+ech "$R58" beat d1 "started" >/dev/null 2>&1
+backdate "$R58" d1 lastBeatAt 7200
+hbout="$(ech "$R58" heartbeat install 2>&1)"; rc=$?
+check "heartbeat install exits 0 against the stubbed crontab" "[ $rc -eq 0 ]"
+[ "$rc" -eq 0 ] || printf '       --- heartbeat install said ---\n%s\n' "$hbout"
+HBCMD="$(printf '%s' "$hbout" | grep -F '# LCARS-ECH' | head -1 \
+         | sed -e 's/^[[:space:]]*17 \* \* \* \* //' -e 's/[[:space:]]*# LCARS-ECH.*$//')"
+check "the installed line's command string was recovered" "[ -n \"\$HBCMD\" ]"
+check "it is the \`stalled\` verb, unchanged by this session" \
+  "printf '%s' \"\$HBCMD\" | grep -q ' stalled '"
+( cd "$R58" && TMPDIR="$TMPROOT/tmp" bash -c "$HBCMD" ) >/dev/null 2>&1
+HBLOG="$R58/.git/lcars/autopilot/heartbeat.log"
+check "the heartbeat wrote its log" "[ -s \"\$HBLOG\" ]"
+check "THE CRONTAB LINE NAMES THE SILENT DELEGATE" "grep -q 'd1' '$HBLOG'"
+check "with its unit" "grep -q 'u-58' '$HBLOG'"
+check "and the next action, in the log the captain reads in the morning" \
+  "grep -qi 'what to do' '$HBLOG'"
+check "no real crontab was written — only the stub was called" \
+  "grep -q 'crontab' '$STUB_LOG'"
+ech "$R58" heartbeat remove >/dev/null 2>&1
+
+printf '\n== S351/9. `watch` writes a WAKE EVENT for a silent delegate ==\n'
+
+R59="$(new_repo)"; ap_init "$R59"; mint "$R59" u-59 T1
+ech "$R59" beat d1 "step one" >/dev/null 2>&1
+backdate "$R59" d1 lastBeatAt 7200
+out="$(ech "$R59" watch start 2>&1)"; rc=$?
+check "watch start exits 0" "[ $rc -eq 0 ]"
+WPID="$(apj "$R59" watch.pid)"
+check "watch recorded its own pid" "printf '%s' \"\$WPID\" | grep -qE '^[0-9]+\$'"
+WLOG="$R59/.git/lcars/autopilot/watch.log"
+i=0
+while [ "$i" -lt 100 ]; do
+  grep -qi 'what to do' "$WLOG" 2>/dev/null && break
+  sleep 0.1; i=$((i + 1))
+done
+check "watch wrote a WAKE event to the declared log" "grep -q 'WAKE' '$WLOG'"
+check "THE WAKE NAMES THE SILENT DELEGATE" "grep -qi 'silent delegate' '$WLOG'"
+check "by id" "grep -q 'd1' '$WLOG'"
+check "and the wake ran \`stalled\`, so the ACTION is in the log too" \
+  "grep -qi 'what to do' '$WLOG'"
+out="$(ech "$R59" watch stop 2>&1)"; rc=$?
+check "watch stop exits 0 and names the RECORDED pid it stopped" \
+  "[ $rc -eq 0 ] && printf '%s' \"\$out\" | grep -q \"\$WPID\""
+check "the watcher really is gone (killed by recorded pid, never by pattern)" \
+  "! kill -0 \"\$WPID\" 2>/dev/null"
+check "KILL DISCIPLINE UNTOUCHED: no new path kills by name or pattern" \
+  "! grep -nE '(pkill|killall|kill[^\\n]*\$\\(ps|ps -ef[^\\n]*kill)' '$REPO_ROOT/skills/lcars-eeh/ech.sh'"
+
+printf '\n== S351/10. `status` shows tier + minutes-since-beat for EVERY delegate ==\n'
+
+R60="$(new_repo)"; ap_init "$R60"
+mint "$R60" u-60a T1
+mint "$R60" u-60b T2
+ech "$R60" beat d1 "halfway" >/dev/null 2>&1
+backdate "$R60" d1 lastBeatAt 180
+backdate "$R60" d2 createdAt 9000
+st="$(ech "$R60" status 2>&1)"
+check "status shows the first delegate" "printf '%s' \"\$st\" | grep -q 'd1'"
+check "status shows the second delegate" "printf '%s' \"\$st\" | grep -q 'd2'"
+check "with the first one's tier" "printf '%s' \"\$st\" | grep -q 'T1'"
+check "with the second one's tier" "printf '%s' \"\$st\" | grep -q 'T2'"
+check "and the MINUTES since d1's last beat" "printf '%s' \"\$st\" | grep -q '3m'"
+check "d2 never beat, and status says so rather than printing a wrong number" \
+  "printf '%s' \"\$st\" | grep -qi 'never'"
+check "status FLAGS the one that is past the limit" \
+  "printf '%s' \"\$st\" | grep -qi 'silent'"
+check "and does NOT flag the one that is inside the limit" \
+  "! printf '%s' \"\$st\" | grep -qE 'd1\\([^)]*SILENT'"
+check "[control] the flag really is attached to d2's own entry" \
+  "printf '%s' \"\$st\" | grep -qE 'd2\\([^)]*SILENT'"
+check "the delegates line is still ONE line, extended — not a third line" \
+  "[ \"\$(printf '%s' \"\$st\" | grep -c 'delegates:')\" = 1 ]"
+check "the tiers line S350 added is still there and still separate" \
+  "printf '%s' \"\$st\" | grep -q 'tiers:'"
+
+printf '\n== S351/11. REGRESSION: with NO delegates, the watchdog is BYTE-IDENTICAL ==\n'
+
+# THE BASELINE IS THE REAL PRE-S351 DRIVER on the SAME fixture. `main` is used
+# for `stalled`, `watch status` and `await` because S350 did not touch them at
+# all; `status` gained exactly two lines in S350 (`tiers:` / `delegates:`), so
+# the comparison there filters those two and nothing else — which is a STRONGER
+# claim than comparing against the sibling: it says S351 adds nothing to the
+# screen when there is nothing to add, and that S350's two lines remain the only
+# difference from shipped `main`.
+BASE51="$TMPROOT/baseline51"
+mkdir -p "$BASE51"
+cp -R "$REPO_ROOT/skills" "$BASE51/skills"
+if git -C "$REPO_ROOT" show main:skills/lcars-eeh/ech.sh >"$BASE51/skills/lcars-eeh/ech.sh" 2>/dev/null; then
+  R61="$(new_repo)"; ap_init "$R61"; new_mission "$R61" u-61 implement
+  python3 - "$R61/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["missions"] = {"M0": {"id": "u-61"}}
+d["drivers"] = {"u-61": {"exitedAt": 1700000000, "exitCode": 1}}
+json.dump(d, open(f, "w"), indent=2)
+PY
+  check "[control] this fixture really does have no delegates" \
+    "[ -z \"\$(apj '$R61' delegates)\" ]"
+  for verb in "stalled" "watch status" "await --limit 1"; do
+    # shellcheck disable=SC2086
+    # THE EPOCH IS NORMALISED, AND ONLY THE EPOCH. `stalled`'s cure line
+    # embeds `$(now)` so the captain can paste it, and `await` prints its own
+    # elapsed seconds, so two runs a second apart differ by one digit — a clock
+    # tick is not a regression. Those two figures are the ONLY thing normalised;
+    # everything else, including every word of every cure, is compared byte for
+    # byte, and `cmd_await`'s own source is asserted identical below.
+    nowout="$(ech "$R61" $verb 2>&1 | sed -e "s|$REPO_ROOT|@ROOT@|g" -e 's/[0-9]\{10\}/@EPOCH@/g' -e 's/after [0-9]*s/after @ELAPSED@/g')"
+    baseout="$(ech_at "$BASE51/skills/lcars-eeh/ech.sh" "$R61" $verb 2>&1 | sed -e "s|$BASE51|@ROOT@|g" -e 's/[0-9]\{10\}/@EPOCH@/g' -e 's/after [0-9]*s/after @ELAPSED@/g')"
+    check "\`$verb\` with no delegates is byte-identical to main" \
+      "[ \"\$nowout\" = \"\$baseout\" ]"
+    if [ "$nowout" != "$baseout" ]; then
+      printf '       --- baseline ---\n%s\n       --- now ---\n%s\n' "$baseout" "$nowout"
+    fi
+  done
+  # …and it really is reporting something, so the comparison is not of two
+  # empty strings.
+  check "[control] that fixture's \`stalled\` does report the stalled mission" \
+    "printf '%s' \"\$(ech '$R61' stalled 2>&1)\" | grep -q 'u-61'"
+  nowst="$(ech "$R61" status 2>&1 | sed "s|$REPO_ROOT|@ROOT@|g" | grep -vE '^  (tiers|delegates):')"
+  basest="$(ech_at "$BASE51/skills/lcars-eeh/ech.sh" "$R61" status 2>&1 | sed "s|$BASE51|@ROOT@|g")"
+  check "\`status\` with no delegates is byte-identical to main but for S350's two lines" \
+    "[ \"\$nowst\" = \"\$basest\" ]"
+  if [ "$nowst" != "$basest" ]; then
+    printf '       --- baseline ---\n%s\n       --- now ---\n%s\n' "$basest" "$nowst"
+  fi
+  check "and those two lines say 'none' rather than inventing a delegate" \
+    "printf '%s' \"\$(ech '$R61' status 2>&1)\" | grep -qi 'delegates: none'"
+else
+  bad "could not read the baseline ech.sh from main (git show failed)"
+fi
+
+# The strongest form of the kill-discipline guarantee: the functions that do the
+# KILLING are byte-identical to main's. This session changes what is REPORTED,
+# never what is killed, and that is the assertion rather than the claim.
+fnbody51() { # <file> <fname>
+  awk -v f="$2" '$0 == f"() {" {on=1} on {print} on && $0 == "}" {exit}' "$1"
+}
+git -C "$REPO_ROOT" show main:skills/lcars-eeh/ech.sh >"$TMPROOT/main-ech51.sh" 2>/dev/null
+# `cmd_policy` IS DELIBERATELY NOT IN THIS LIST: D12 above already asserts its
+# source identical to main, and a second near-identical PASS line is noise, not
+# coverage. The three here are the ones that do the KILLING, which nothing was
+# holding before.
+for fn in cmd_await watch_pid_live driver_live; do
+  a="$(fnbody51 "$TMPROOT/main-ech51.sh" "$fn")"
+  b="$(fnbody51 "$REPO_ROOT/skills/lcars-eeh/ech.sh" "$fn")"
+  check "$fn() source is byte-identical to main (UNTOUCHED by this session)" \
+    "[ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ]"
+done
+
+printf '\n== S351/12. the BEAT OBLIGATION is written down where both readers look ==\n'
+
+check "DELEGATION.md states the beat obligation" "grep -qi 'beat' '$DOC'"
+check "it says ONE BEAT PER STEP" "grep -qiE 'one beat per step' '$DOC'"
+check "it names the verb a delegate runs" "grep -q 'lcars-ech beat' '$DOC'"
+check "it names the limit the delegate is held to" "grep -q '1800' '$DOC'"
+check "it names the env var that changes it" "grep -q 'LCARS_ECH_BEAT_LIMIT' '$DOC'"
+check "it says what happens on expiry — the ECH is told, not the captain" \
+  "grep -qi 'stalled' '$DOC'"
+check "delegate-brief.md documents the beat slot" \
+  "grep -q 'BEAT_LIMIT' '$REPO_ROOT/skills/lcars-eeh/delegate-brief.md'"
+R62="$(new_repo)"; ap_init "$R62"; mint "$R62" u-62 T1
+B62="$R62/.git/lcars/delegates/d1/BRIEF.md"
+check "the minted brief exists" "[ -f '$B62' ]"
+check "THE BRIEF TELLS THE DELEGATE TO BEAT" "grep -qi 'beat' '$B62'"
+check "it gives the exact command, with this delegate's own id" \
+  "grep -qF 'beat d1' '$B62'"
+# A PLACEHOLDER IS A QUESTION. Every other command in the brief is runnable as
+# it stands (§ 3 hands over the absolute launcher); the beat command must be too,
+# or a delegate has to go and work out what to type before it can report.
+check "and the command is RUNNABLE as it stands — no <launcher> placeholder" \
+  "! grep -q '<launcher>' '$B62'"
+check "it names the same absolute launcher the rest of the brief does" \
+  "grep -qF \"bash \$REPO_ROOT/skills/lcars-eeh/ech.sh beat d1\" '$B62'"
+check "IT STATES THE LIMIT IT IS HELD TO, in minutes a model can act on" \
+  "grep -qE '30 ?min' '$B62'"
+check "and says what happens if it goes quiet" \
+  "grep -qi 'silent' '$B62'"
+check "the brief still has NO unfilled template tokens" "! grep -q '{{' '$B62'"
+check "the recorded briefParts names the beat part (the record, not a grep)" \
+  "printf '%s' \"\$(apj '$R62' delegates.d1.briefParts)\" | grep -q 'beat'"
+BLIM="$(ech "$R62" delegate u-62 2>&1)"
+check "[control] a second mint for one unit is still the S350 no-op" \
+  "printf '%s' \"\$BLIM\" | grep -qi 'already minted'"
+
+printf '\n== S351/7c. [D1] a malformed limit NEVER silences a report that does not read it ==\n'
+
+# THE CRITICAL REGRESSION OF THIS SESSION, WITH THE CONTROL BOTH WAYS. The
+# invariant: a malformed LCARS_ECH_BEAT_LIMIT must never silence a report that
+# does not depend on it, must never change `stalled`'s exit code, and must never
+# be silently treated as all-quiet. Proving only one direction cannot tell a
+# fixed guard from a disabled one, so both are below: a repo with ZERO delegates
+# reports its failed mission IDENTICALLY either way, AND a repo WITH a quiet
+# delegate is still named either way.
+R63="$(new_repo)"; ap_init "$R63"; new_mission "$R63" u-63 implement
+python3 - "$R63/.git/lcars/missions/u-63/state.json" <<'PY'
+import json, sys, time
+f = sys.argv[1]
+d = json.load(open(f))
+# FAILED AND IDLE is witness 1: the mission's OWN record of a failed attempt.
+d["failedStage"] = "align"
+d["failedAt"] = int(time.time()) - 600
+d["failedReason"] = "boom"
+json.dump(d, open(f, "w"), indent=2)
+PY
+check "[control] this fixture really has NO delegates at all" \
+  "[ -z \"\$(apj '$R63' delegates)\" ]"
+clean_o="$(ech "$R63" stalled 2>/dev/null)"; clean_rc=$?
+check "[control] with a clean env it reports the failed mission" \
+  "printf '%s' \"\$clean_o\" | grep -q 'FAILED AND IDLE'"
+check "[control] and \`stalled\` exits 0, as its own header contract says" \
+  "[ $clean_rc -eq 0 ]"
+bad_o="$(ech_lim 30m "$R63" stalled 2>/dev/null)"; bad_rc=$?
+check "A MALFORMED LIMIT STILL REPORTS THE FAILED MISSION" \
+  "printf '%s' \"\$bad_o\" | grep -q 'FAILED AND IDLE'"
+check "and \`stalled\` STILL EXITS 0 (an hourly cron job that exits 1 starts mailing)" \
+  "[ $bad_rc -eq 0 ]"
+nclean="$(printf '%s' "$clean_o" | sed 's/[0-9]\{10\}/@EPOCH@/g')"
+nbad="$(printf '%s' "$bad_o" | sed 's/[0-9]\{10\}/@EPOCH@/g')"
+check "THE REPORT IS BYTE-IDENTICAL BOTH WAYS — nothing here depends on the limit" \
+  "[ \"\$nclean\" = \"\$nbad\" ]"
+if [ "$nclean" != "$nbad" ]; then
+  printf '       --- clean env ---\n%s\n       --- malformed limit ---\n%s\n' "$nclean" "$nbad"
+fi
+# IDENTICAL IS NOT THE SAME AS HIDDEN. The report is untouched because it does
+# not read the limit; the operator is told anyway, on stderr, where it cannot
+# displace a line of the report a parser or a human is reading.
+check "the problem is NOT hidden: the warning lands on stderr" \
+  "printf '%s' \"\$(ech_lim 30m '$R63' stalled 2>&1 >/dev/null)\" | grep -q 'LCARS_ECH_BEAT_LIMIT'"
+check "it quotes the value it refused to take" \
+  "printf '%s' \"\$(ech_lim 30m '$R63' stalled 2>&1 >/dev/null)\" | grep -q '30m'"
+check "[control] a clean env says NOTHING on stderr (no warning for a sane env)" \
+  "[ -z \"\$(ech '$R63' stalled 2>&1 >/dev/null)\" ]"
+# THE BLAST RADIUS. One export took out `next`, `status`, `playbook`, `watch
+# status` and `delegates` as well. The claim is comparative on purpose — each
+# verb's exit code under a malformed limit must equal its exit code with a clean
+# env, whatever that code happens to be on this fixture.
+for v in "next" "status" "playbook" "delegates" "watch status" "stalled"; do
+  # shellcheck disable=SC2086
+  ech "$R63" $v >/dev/null 2>&1; crc=$?
+  # shellcheck disable=SC2086
+  ech_lim 30m "$R63" $v >/dev/null 2>&1; brc=$?
+  check "\`$v\`'s exit code is UNCHANGED by a malformed limit (clean env gave $crc)" \
+    "[ $brc -eq $crc ]"
+done
+# AND THE OTHER DIRECTION, which is what stops this cure from being a disabled
+# guard: where there IS something to measure, a malformed limit must still
+# measure it at a KNOWN limit and name it.
+R64="$(new_repo)"; ap_init "$R64"; mint "$R64" u-64 T1
+ech "$R64" beat d1 "step one" >/dev/null 2>&1
+backdate "$R64" d1 lastBeatAt 7200
+out="$(ech_lim 30m "$R64" stalled 2>&1)"; rc=$?
+check "THE OTHER DIRECTION: a malformed limit still NAMES the silent delegate" \
+  "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "by id, so the report is still actionable" "printf '%s' \"\$out\" | grep -q 'd1'"
+check "and it exits 0 while doing so" "[ $rc -eq 0 ]"
+check "the line states the limit it FELL BACK TO (1800), not the value it refused" \
+  "printf '%s' \"\$out\" | grep -q '1800'"
+check "and says in-band that the override was REJECTED rather than applied" \
+  "printf '%s' \"\$out\" | grep -qi 'reject'"
+check "it still prints the next action" "printf '%s' \"\$out\" | grep -qi 'what to do'"
+
+printf '\n== S351/7d. [D1] an EMPTY and an ABSURD limit degrade the same way ==\n'
+
+# BOTH WERE TOLERATED SILENTLY BEFORE THIS ROUND. An EMPTY value is most
+# plausibly a failed `$VAR` substitution in a wrapper, which is the false-green
+# shape this whole guard exists for: the operator meant 300 and got 1800 with
+# nothing said. An ABSURD one is worse — it parses, so it was applied, and a
+# bound no delegate can ever cross is an OFF SWITCH for the watchdog, which this
+# mode does not have. Neither refuses; both degrade to the documented default
+# and say so.
+out="$(ech_lim '' "$R64" stalled 2>&1)"; rc=$?
+check "an EMPTY limit does not refuse" "[ $rc -eq 0 ]"
+check "it still names the silent delegate, at the default" \
+  "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "and it SAYS the empty value took no effect" \
+  "printf '%s' \"\$out\" | grep -q 'LCARS_ECH_BEAT_LIMIT'"
+out="$(ech_lim 999999999999999999999 "$R64" stalled 2>&1)"; rc=$?
+check "an ABSURD limit does not refuse either" "[ $rc -eq 0 ]"
+check "IT IS NOT AN OFF SWITCH: the delegate two hours quiet is still named" \
+  "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "and it says the value was out of range rather than applying it" \
+  "printf '%s' \"\$out\" | grep -qiE 'out of range|too large'"
+check "NO SHELL ARITHMETIC ERROR reaches the operator" \
+  "! printf '%s' \"\$out\" | grep -qi 'integer expression\|value too great'"
+out="$(ech_lim 604800 "$R64" stalled 2>&1)"; rc=$?
+check "[control] a LARGE but plausible limit (one week) is HONOURED, not capped" \
+  "[ $rc -eq 0 ] && ! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "[control] and nothing is warned about a limit that was accepted" \
+  "! printf '%s' \"\$out\" | grep -qi 'reject'"
+# AND IT IS WRITTEN DOWN WHERE BOTH READERS LOOK. The shared doc is the only
+# place `lcars eeh`, `run-session` and `night-watch` all read, so a rule that
+# lives only in the shell drifts the moment somebody restates it.
+check "DELEGATION.md says a broken limit DEGRADES rather than refusing" \
+  "grep -qi 'degrades' '$DOC' && grep -qi 'does not refuse' '$DOC'"
+check "it says \`stalled\` always exits 0" \
+  "grep -q 'always exits 0' '$DOC'"
+check "it names the UNTIMEABLE lane" "grep -q 'UNTIMEABLE' '$DOC'"
+check "it names where the minted limit is recorded" \
+  "grep -q 'beatLimit' '$DOC'"
+check "delegate-brief.md says the minted limit is recorded too" \
+  "grep -q 'beatLimit' '$REPO_ROOT/skills/lcars-eeh/delegate-brief.md'"
+
+printf '\n== S351/13. [D2] a clock the watchdog CANNOT READ is reported, never skipped ==\n'
+
+# THE SAME ARGUMENT THE BEAT_LIMIT GUARD MAKES, APPLIED PER DELEGATE. A record
+# whose `lastBeatAt` will not parse was reported by `status` as
+# `beat=unknown (no timestamp recorded)` and by `stalled` as NOTHING AT ALL,
+# exit 0 — which is the all-quiet false green one delegate down. Reachable by
+# `record`, by a hand-edit, or by a truncated write.
+R65="$(new_repo)"; ap_init "$R65"; mint "$R65" u-65 T1
+python3 - "$R65/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["delegates"]["junk3"] = {"id": "junk3", "status": "weird",
+                           "lastBeatAt": "not-a-number"}
+json.dump(d, open(f, "w"), indent=2)
+PY
+st="$(ech "$R65" status 2>&1)"
+check "[control] the screen already listed the broken record" \
+  "printf '%s' \"\$st\" | grep -q 'junk3'"
+out="$(ech "$R65" stalled 2>&1)"; rc=$?
+check "AND NOW stalled REPORTS IT — an unreadable clock is not all-quiet" \
+  "printf '%s' \"\$out\" | grep -q 'junk3'"
+check "it names the field it could not read" \
+  "printf '%s' \"\$out\" | grep -q 'lastBeatAt'"
+check "it says it cannot TIME the delegate rather than guessing a number" \
+  "printf '%s' \"\$out\" | grep -qiE 'cannot be read|cannot read|not a number'"
+check "IT INVENTS NO ELAPSED TIME — no negative or bogus minute count" \
+  "! printf '%s' \"\$out\" | grep -qE '\\-1m|0m ago'"
+check "it still prints the next action, like every other line of this report" \
+  "printf '%s' \"\$out\" | grep -qi 'what to do'"
+check "and stalled still exits 0" "[ $rc -eq 0 ]"
+check "[control] the HEALTHY delegate beside it is NOT reported" \
+  "! printf '%s' \"\$out\" | grep -qE 'DELEGATE: d1'"
+
+# A FUTURE timestamp is the same defect wearing the opposite sign: `max(0, …)`
+# launders it into `beat=0m ago`, which does not merely omit the delegate, it
+# ASSERTS that it has just reported. A few seconds of skew is normal between
+# machines, so there is a grace; a day is not skew.
+R66="$(new_repo)"; ap_init "$R66"; mint "$R66" u-66 T1
+ech "$R66" beat d1 "step one" >/dev/null 2>&1
+backdate "$R66" d1 lastBeatAt -86400
+out="$(ech "$R66" stalled 2>&1)"; rc=$?
+check "A FUTURE beat timestamp is REPORTED, not laundered into 'just beat'" \
+  "printf '%s' \"\$out\" | grep -q 'd1'"
+check "it says the recorded time is in the FUTURE" \
+  "printf '%s' \"\$out\" | grep -qi 'future'"
+check "and stalled still exits 0" "[ $rc -eq 0 ]"
+st="$(ech "$R66" status 2>&1)"
+check "the screen does not claim it just beat" \
+  "! printf '%s' \"\$st\" | grep -q 'beat=0m ago'"
+backdate "$R66" d1 lastBeatAt -30
+out="$(ech "$R66" stalled 2>&1)"
+check "[control] a 30-second skew is NOT reported — the grace absorbs clock drift" \
+  "! printf '%s' \"\$out\" | grep -q 'd1'"
+
+printf '\n== S351/14. [D3] the limit a delegate was BRIEFED under is RECORDED and REPORTED ==\n'
+
+# INFER-VS-RECORD, AND THE PRODUCER RECORDS THE FACT. A brief minted under
+# `LCARS_ECH_BEAT_LIMIT=300` states 5 minutes; `stalled` run under the default
+# then said "The limit it was held to: 1800s (30m, LCARS_ECH_BEAT_LIMIT)" — a
+# sentence that is FALSE for that delegate, stated with total confidence. The
+# divergence was undetectable on disk because the minted limit was not written
+# down. It is now, and the report states both figures rather than overwriting
+# either.
+R67="$(new_repo)"; ap_init "$R67"; new_mission "$R67" u-67 implement
+ech "$R67" tier u-67 --tier T1 --why "needs one owner" >/dev/null 2>&1
+ech_lim 300 "$R67" delegate u-67 >/dev/null 2>&1
+B67="$R67/.git/lcars/delegates/d1/BRIEF.md"
+check "[control] the brief really was minted under the 300s limit" \
+  "grep -q '300' '$B67'"
+check "THE MINTER RECORDS THE LIMIT IT STAMPED INTO THE BRIEF" \
+  "[ \"\$(apj '$R67' delegates.d1.beatLimit)\" = 300 ]"
+ech_lim 300 "$R67" beat d1 "step one" >/dev/null 2>&1
+backdate "$R67" d1 lastBeatAt 7200
+out="$(ech "$R67" stalled 2>&1)"; rc=$?
+check "it is reported silent under the default limit" \
+  "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "THE REPORT NAMES THE DIVERGENCE instead of stating one limit as the truth" \
+  "printf '%s' \"\$out\" | grep -qi 'its brief said'"
+check "it names the limit the brief actually stated (5 minutes)" \
+  "printf '%s' \"\$out\" | grep -q '5m'"
+check "and it still states the limit actually applied now (1800s)" \
+  "printf '%s' \"\$out\" | grep -q '1800'"
+check "and stalled still exits 0" "[ $rc -eq 0 ]"
+# A PRE-EXISTING RECORD HAS NO SUCH FIELD. It must still be reported, and must
+# not be given a divergence nobody can prove.
+R68="$(new_repo)"; ap_init "$R68"; mint "$R68" u-68 T1
+python3 - "$R68/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["delegates"]["d1"].pop("beatLimit", None)
+json.dump(d, open(f, "w"), indent=2)
+PY
+check "[control] the field really is gone, as it is for every pre-S351 record" \
+  "[ -z \"\$(apj '$R68' delegates.d1.beatLimit)\" ]"
+backdate "$R68" d1 createdAt 7200
+out="$(ech "$R68" stalled 2>&1)"; rc=$?
+check "a record minted BEFORE the field existed is still reported" \
+  "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "and it claims NO divergence it cannot prove" \
+  "! printf '%s' \"\$out\" | grep -qi 'its brief said'"
+check "and stalled still exits 0" "[ $rc -eq 0 ]"
+# AND NO FALSE DIVERGENCE when the two agree, which is the common case.
+R69="$(new_repo)"; ap_init "$R69"; mint "$R69" u-69 T1
+backdate "$R69" d1 createdAt 7200
+out="$(ech "$R69" stalled 2>&1)"
+check "[control] a delegate minted AND measured at the same limit shows no divergence" \
+  "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE' && ! printf '%s' \"\$out\" | grep -qi 'its brief said'"
+
+printf '\n== S351/15. [D5] a delegate with no words uses the words that FIT, never "" ==\n'
+
+# LOW, AND STILL WRONG. `record` can move the clock of a delegate without ever
+# appending a beat, and the report then printed `its last words, which are where
+# it got to: ""` — empty quotes where the evidence should be. The never-beat
+# lane already has the right sentence for exactly this shape.
+R70="$(new_repo)"; ap_init "$R70"; mint "$R70" u-70 T1
+python3 - "$R70/.git/lcars/autopilot.json" <<'PY'
+import json, sys, time
+f = sys.argv[1]
+d = json.load(open(f))
+d["delegates"]["d1"]["lastBeatAt"] = int(time.time()) - 7200
+d["delegates"]["d1"].pop("beats", None)
+json.dump(d, open(f, "w"), indent=2)
+PY
+out="$(ech "$R70" stalled 2>&1)"
+check "the delegate is reported" "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE'"
+check "IT DOES NOT PRINT EMPTY QUOTES where its last words should be" \
+  "! printf '%s' \"\$out\" | grep -q 'where it got to: \"\"'"
+check "it uses the wording that fits — it said nothing at all" \
+  "printf '%s' \"\$out\" | grep -qi 'said nothing at all'"
+check "[control] and a delegate that DID beat still has its words quoted" \
+  "printf '%s' \"\$(ech '$R55' stalled 2>&1; ech '$R64' stalled 2>&1)\" | grep -qi 'last words'"
+
 printf '\n== 12. REGRESSION: an untiered mission reaches `next` exactly as before ==\n'
 
 # THE BASELINE IS THE REAL PRE-CHANGE DRIVER, run on the SAME fixture.

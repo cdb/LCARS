@@ -41,6 +41,8 @@ four, delegates duplicate each other's work and leave gaps between them.
 | `{{BOUNDARIES}}` | what this unit does not cover |
 | `{{CREATED_AT}}` | when it was minted |
 | `{{SIGNOFF}}` | who minted it and under which recorded judgement |
+| `{{LAUNCHER}}` | **S351** — `bash <absolute path of the launcher that minted this brief>`, the same path § 3 already gives for every other verb. A brief whose commands are runnable as they stand is the difference between a delegate that beats and one that goes looking |
+| `{{BEAT_LIMIT}}` | **S351** — the silence limit this delegate is held to, in minutes and in seconds, and what happens on expiry. The number comes from `BEAT_LIMIT` (`LCARS_ECH_BEAT_LIMIT`), so a brief minted under an overridden limit states the limit it was actually minted under. That figure is also RECORDED at `delegates.<id>.beatLimit`, so `stalled` can report the limit this delegate was briefed under rather than whichever one happens to be set when the report runs |
 | `{{ENGINE_STAMP}}` | **S352** — the engine the delegate must run on. Rendered EMPTY today. |
 | `{{FRONT_DOOR}}` | **S352** — the front-door clause. Rendered EMPTY today. |
 
@@ -127,6 +129,24 @@ Your hand-back states, in this order:
 
 {{TIER_DELIVERABLE}}
 **Your hand-back is a report, never a verdict.** See § 5.
+
+### And while you work: BEAT
+
+The hand-back above is the END. Between now and then the ECH has **no other way
+to see you**: you are a model in another window, not a process it started, so it
+has no pid of yours to watch and no log of yours to read. Your beat is the only
+thing it can see.
+
+**One beat per step, as you finish it** — through the launcher named in
+*Where you work* above, by its absolute path:
+
+    {{LAUNCHER}} beat {{DELEGATE_ID}} "<one line of what you just did>"
+
+One line, every time. It appends — a beat never overwrites an earlier one — so
+the sequence of them is the record of how you spent your hours, and the ECH
+reads your latest one as *where you got to*.
+
+{{BEAT_LIMIT}}
 
 ## 3. The LCARS verbs in scope
 
