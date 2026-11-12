@@ -3062,6 +3062,21 @@ cat >"$GOLDEN" <<GOLDENEOF
 <ul id="overrides">
 <li>lcars-20261001-002 &mdash; low / infrastructure &mdash; the runner had no python3 &mdash; evidence: live-check/09-override.txt</li>
 </ul>
+<h2 id="ech-shortfalls-title">Where the ECH fell short</h2>
+<p class="none">What a delegate (or the ECH itself) recorded as the ECH&rsquo;s own
+shortfall: a vague brief, a boundary it had to guess, a question the ECH should
+have answered. An explicit &ldquo;nothing found&rdquo; is a legal entry; silence
+is not.</p>
+<ul id="ech-shortfalls">
+<li>none yet</li>
+</ul>
+<h2 id="lcars-bugs-title">Where LCARS fell short</h2>
+<p class="none">What the same hand-backs recorded against the FACTORY: a verb
+that refused wrongly, a stage that lied, a message nobody could act on. A
+separate list because it feeds a different fix.</p>
+<ul id="lcars-bugs">
+<li>none yet</li>
+</ul>
 </body></html>
 GOLDENEOF
 if diff -u "$GOLDEN" "$RPHTML" >"$TMPROOT/report.diff" 2>&1; then

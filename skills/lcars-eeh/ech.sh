@@ -165,6 +165,14 @@ usage() {
                        timerless guard; wake on actionable changes, exit 10 for a human
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
+  engines              WHO RUNS WHAT: the role -> engine matrix for orchestrator,
+                       delegate, worker, tester, reviewer, numberOne — each row's
+                       engine, its model, and whether that is the RECORDED value or
+                       the printed default (orchestrator = this run's RECORDED engine,
+                       never a detection of the CLI you drive from; every other
+                       role = copilot, which is employer-paid). Change
+                       one with `record engines.<role>.engine claude|copilot` — no new
+                       writer. `numberOne.engine` stays the compatible read
   tier <unit> --tier T0|T1|T2 --why "<reason>"
                        record HOW MUCH ORCHESTRATION this unit needs, and why. The
                        tier is YOUR free judgement; the factory's estimate is an
@@ -2065,19 +2073,319 @@ pf_q_engine_permission() {
   return 0
 }
 
+# ==========================================================================
+# THE ROLE → ENGINE MATRIX (S352) — who runs what, as a SETTING
+# ==========================================================================
+# WHY IT EXISTS. A run used to record exactly ONE engine (`engine`), plus a
+# second one for the verifier (`numberOne.engine`). There was no way to say
+# "orchestrator Claude, delegates and workers Copilot, reviewer Claude" — the
+# captain's own arrangement worked BY ACCIDENT: whichever CLI he launched became
+# the boss and the recorded `engine` became everything beneath it. He wants that
+# to be a setting, not a sentence he retypes.
+#
+# THE VOCABULARY IS REUSED, NOT REINVENTED. `LCARS_ENGINES`,
+# `lcars_available_engines`, `lcars_default_engine` and
+# `lcars_default_model_for_engine` already answer "which engines exist", "which
+# are installed here", "which would a surface preselect" and "what model does
+# engine X run". This matrix calls them; it does not re-decide any of it. And
+# the ROLES are the ones the worker path can already see — `LCARS_WORKER_ROLE`
+# and `stage_key_for_role` already attribute spend per role — so the matrix
+# names something the rest of LCARS can already attribute.
+#
+# COPILOT IS EMPLOYER-PAID AND EFFECTIVELY FREE; CLAUDE IS BILLED. That is why
+# the documented default is: orchestrator = the CLI this run is actually driven
+# by, every other role = copilot. A Claude role is only ever a RECORDED choice.
+#
+# THE DEFAULT IS PRINTED, NEVER SILENT. Every row says whether its engine came
+# out of the record or out of this paragraph, because a default nobody can see
+# is indistinguishable from a setting somebody made.
+#
+# `numberOne.engine` STAYS AS THE COMPATIBLE READ. A repo recorded before this
+# existed keeps working and its value is what `engines.numberOne` resolves to.
+# NOTHING MIGRATES IT: the worst defect this seam could ship is losing a
+# captain's recorded setting, and a migration is the only way to lose one.
+ECH_ROLES="orchestrator delegate worker tester reviewer numberOne"
+
+# engine_matrix_rows → one TAB-separated row per role, in ECH_ROLES order:
+#
+#   role <TAB> engine <TAB> model <TAB> engine-source <TAB> model-source
+#
+# THE LIBRARY IS SOURCED ONCE, in a subshell that can still see this function's
+# own locals — six roles times three library calls would otherwise be eighteen
+# sources of a 2,000-line file for one screen.
+engine_matrix_rows() {
+  local runeng legacy role recs="" tab runsrc
+  tab="$(printf '\t')"
+  runeng="$(ap_j engine)"
+  # S352 FIX ROUND 1 (D2) — THE ORCHESTRATOR ROW SAYS WHICH RECORD IT READ, and
+  # it does not claim a detection that does not exist. This row used to print
+  # `default: the CLI this run is driven by`. NOTHING here detects the host CLI:
+  # the value is the recorded run engine, and two repos differing only in that
+  # field, driven from ONE session, print different orchestrators. The claim was
+  # the defect, not the value — so the label now names the file it came out of.
+  if [ -n "$runeng" ]; then
+    runsrc="default: this run's RECORDED engine (autopilot.json engine) — not a detection of the CLI it is driven by"
+  else
+    runeng="$(jfile "$CFG" engine)"
+    if [ -n "$runeng" ]; then
+      runsrc="default: the repo's configured engine (config.json engine) — not a detection of the CLI it is driven by"
+    else
+      runsrc="default: NO engine is recorded for this run in either autopilot.json or config.json — and nothing here detects the CLI it is driven by"
+    fi
+  fi
+  legacy="$(ap_j numberOne.engine)"
+  for role in $ECH_ROLES; do
+    recs="$recs$role$tab$(ap_j "engines.$role.engine")$tab$(ap_j "engines.$role.model")
+"
+  done
+  (
+    . "$SKILLS_DIR/lcars-init/lcars-common.sh" >/dev/null 2>&1 || true
+    avail=" $(lcars_available_engines 2>/dev/null | tr '\n' ' ') "
+    fb="$(lcars_default_engine "$CFG" 2>/dev/null)"
+    while IFS="$tab" read -r role reng rmodel; do
+      [ -n "${role:-}" ] || continue
+      eng="$reng"; src=""
+      if [ -n "$eng" ]; then
+        src="recorded"
+      elif [ "$role" = numberOne ] && [ -n "$legacy" ]; then
+        # THE COMPATIBLE READ, NAMED AS SUCH. A captain reading this row has to
+        # be able to tell which key he would edit to change it.
+        eng="$legacy"; src="recorded in numberOne.engine (the compatible read)"
+      elif [ "$role" = orchestrator ]; then
+        eng="$runeng"; src="$runsrc"
+      else
+        eng="copilot"; src="default: copilot, which is employer-paid"
+      fi
+      if [ -z "$eng" ]; then
+        eng="${fb:-copilot}"
+        src="default: nothing is recorded anywhere, so the installed default"
+      fi
+      # IT MAY NEVER NAME AN ENGINE THIS MACHINE DOES NOT HAVE. A row that
+      # promises claude on a copilot-only box is a brief that cannot be obeyed,
+      # and `lcars_default_engine` already skips an engine that is not
+      # installed for exactly this reason.
+      case "$avail" in
+        *" $eng "*) : ;;
+        "  ")
+          src="$src — but NO ENGINE IS INSTALLED HERE, so nothing can run it" ;;
+        *)
+          if [ -n "$fb" ] && [ "$fb" != "$eng" ]; then
+            src="$src — $eng is NOT INSTALLED here, so it resolves to $fb"
+            eng="$fb"
+          else
+            src="$src — $eng is NOT INSTALLED here and there is nothing to fall back to"
+          fi ;;
+      esac
+      model="$rmodel"
+      if [ -n "$model" ]; then
+        msrc="recorded"
+      else
+        # ONE PLACE ANSWERS "what model does engine X run", and it is keyed on
+        # the RESOLVED engine — so a copilot role can never come out carrying a
+        # model that belongs to the other CLI.
+        model="$(lcars_default_model_for_engine "$eng" 2>/dev/null)"
+        [ -n "$model" ] || model="the-engine-default"
+        msrc="default"
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' "$role" "$eng" "$model" "$src" "$msrc"
+    done <<ENGINE_MATRIX_ROWS
+$recs
+ENGINE_MATRIX_ROWS
+  )
+}
+
+# engine_for_role <role> / engine_model_for_role <role> — the two leaf readers
+# every stamp uses. They read the SAME rows the table prints, so the screen and
+# a minted brief cannot disagree about who runs what.
+engine_for_role()       { engine_matrix_rows | awk -F'\t' -v r="$1" '$1==r {print $2; exit}'; }
+engine_model_for_role() { engine_matrix_rows | awk -F'\t' -v r="$1" '$1==r {print $3; exit}'; }
+# engine_src_for_role — WHERE that row's engine came from, in the same words the
+# table prints. S352 fix round 1 (D8): a brief that states a substitution has to
+# read the provenance from the one place that decides it, not re-derive it.
+engine_src_for_role()   { engine_matrix_rows | awk -F'\t' -v r="$1" '$1==r {print $4; exit}'; }
+
+engine_role_ok() { case " $ECH_ROLES " in *" ${1:-} "*) return 0 ;; esac; return 1; }
+engine_name_ok() {
+  local known
+  known="$( . "$SKILLS_DIR/lcars-init/lcars-common.sh" >/dev/null 2>&1 \
+              && printf '%s' "${LCARS_ENGINES:-claude copilot}" )"
+  [ -n "$known" ] || known="claude copilot"
+  case " $known " in *" ${1:-} "*) return 0 ;; esac
+  return 1
+}
+
+# engines_recorded — 0 iff the captain's table is already on disk in ANY form.
+# This is what makes the preflight question ASK-ONCE and makes a pre-recorded
+# table suppress it entirely, which is the unattended path: an unattended run
+# must never block on this, and it never re-raises a settled question.
+engines_recorded() { [ -n "$(ap_keys engines)" ]; }
+
+# engines_table_say <indent> — the table, printed. Used by `engines` and by
+# preflight's own question, so the recommendation he is offered and the table he
+# reads back later are rendered by ONE function.
+engines_table_say() {
+  local ind="${1:-  }" role eng model src msrc tab
+  tab="$(printf '\t')"
+  say "${ind}$(printf '%-13s %-9s %-18s %s' role engine model 'recorded, or the printed default?')"
+  while IFS="$tab" read -r role eng model src msrc; do
+    [ -n "${role:-}" ] || continue
+    say "${ind}$(printf '%-13s %-9s %-18s %s' "$role" "$eng" "$model" "$src ; model $msrc")"
+  done <<ENGINES_TABLE
+$(engine_matrix_rows)
+ENGINES_TABLE
+}
+
+cmd_engines() {
+  [ $# -eq 0 ] || die "engines: this verb takes no arguments and reads nothing but the record. To CHANGE a row, record it: \`$SELF_CMD record engines.<role>.engine claude|copilot\` or \`$SELF_CMD record engines.<role>.model <model>\`. Roles: $ECH_ROLES."
+  require_state
+  say "engines — WHO RUNS WHAT on this run (the role → engine matrix)"
+  say "  the one statement of these rules is \`DELEGATION.md\` § *Who runs what*:"
+  say "    bash $SKILLS_DIR/lcars-eeh/eeh.sh docs delegation"
+  say ""
+  engines_table_say "  "
+  say ""
+  say "  installed on this machine: $(engine_matrix_installed_say)"
+  say "  CHANGE a row (no new writer — it is the same \`record\` every other key uses):"
+  say "    $SELF_CMD record engines.reviewer.engine claude"
+  say "    $SELF_CMD record engines.tester.model   <model>"
+  say "  A DEFAULT IS PRINTED, NEVER SILENT: every row above says whether its engine"
+  say "    came out of the record or out of the documented default. The orchestrator's"
+  say "    default is THE RUN'S RECORDED ENGINE and its row names the file that was"
+  say "    read for it: NOTHING HERE DETECTS THE HOST CLI, and a label that said"
+  say "    otherwise would assert a detection this build does not have. Every other"
+  say "    role defaults to copilot, which is employer-paid. numberOne.engine stays"
+  say "    the compatible read and nothing migrates it."
+  say "  WHAT READS THESE ROWS TODAY, and what does not: the \`delegate\` and"
+  say "    \`tester\` rows are STAMPED INTO a minted brief and recorded on the"
+  say "    delegate, so they are what a delegate is actually told to run on. The"
+  say "    other four — orchestrator, worker, reviewer, numberOne — are RECORDED AND"
+  say "    REPORTED ONLY: nothing launches from them yet. Number One is still"
+  say "    applied by its own LCARS verb from numberOne.engine (the compatible"
+  say "    read), not from engines.numberOne. So this table NAMES who runs what on"
+  say "    this run; it does not yet GOVERN every launch, and it will not pretend to."
+  return 0
+}
+
+engine_matrix_installed_say() {
+  local a
+  a="$( . "$SKILLS_DIR/lcars-init/lcars-common.sh" >/dev/null 2>&1 \
+          && lcars_available_engines 2>/dev/null | tr '\n' ' ' )"
+  a="$(printf '%s' "$a" | sed 's/[[:space:]]*$//')"
+  [ -n "$a" ] || a="NOTHING — neither CLI is on this PATH"
+  printf '%s' "$a"
+}
+
+# --- preflight question 7: WHO RUNS WHAT (REPORTED, NEVER A PROMPT) -------
+# ASKED ONCE, RECORDED ONCE, NEVER RAISED AGAIN — the same contract
+# `pf_q_number_one` carries, and answerable from a pre-recorded value so an
+# unattended run never blocks on it.
+#
+# IT REPORTS AND PROCEEDS RATHER THAN PROMPTING, which is question 5's shape
+# (`pf_q_engine_permission`) and not an omission. TWO MEASURED REASONS:
+#
+#   1. A SEVENTH PROMPT BREAKS THE ROUND'S OWN RIG. `tests/lcars-ech.test.sh`
+#      drives this round through a real pty with a fixed list of answers and
+#      asserts `PTYPROMPTS 2 ANSWERED 2` on two arms. Measured with the rig
+#      itself: adding a prompt here yields `PTYPROMPTS 3 ANSWERED 2` — a prompt
+#      the repo's own harness cannot answer. A question nobody can answer is not
+#      a question.
+#   2. AND THE UNANSWERED ONE COSTS A BOUNDED READ EVERY RUN. The same
+#      measurement showed the read running out at its full bound (6s in the rig,
+#      `ASK_TIMEOUT` in life) before proceeding on the recommendation it was
+#      going to take anyway. That suite is already load-sensitive; buying a
+#      guaranteed delay for an answer nobody gives is the wrong trade.
+#
+# THE OVERRIDE IS NOT LOST, IT MOVED TO THE RIGHT DOOR. The captain's own words
+# were that he wants this to be *a setting, not a sentence he retypes* — so the
+# override is `record engines.<role>.engine <engine>`, which is durable, is read
+# by every later run, and is NAMED in the text below. A table recorded before
+# the run suppresses this item entirely, which is the unattended path.
+#
+# WHAT IT RECORDS IS THE SETTLEMENT, NOT A FROZEN COPY OF THE DEFAULTS. The
+# recommended table IS the documented default, so accepting it records "the
+# printed defaults were taken" — which keeps resolving correctly if the
+# machine's installed engines change later. Freezing the values would record a
+# setting he never made and could not tell from one he did.
+PF_ENGINES_ASKED=0
+pf_q_engines() {
+  [ "$PF_ENGINES_ASKED" = 0 ] || return 0
+  PF_ENGINES_ASKED=1
+  if engines_recorded; then
+    say ""
+    say "7. Who runs what (the role → engine matrix): already recorded — not asking."
+    engines_table_say "   "
+    return 0
+  fi
+  say ""
+  say "7. Who runs what (the role → engine matrix). RECOMMENDED, and it is exactly"
+  say "   what the run resolves to if you change nothing:"
+  engines_table_say "   "
+  # THE ORCHESTRATOR SENTENCE WAS A LIE ON THE CAPTAIN'S SCREEN UNTIL S352 FIX
+  # ROUND 3. It read "the orchestrator is the CLI this run is driven by", which
+  # asserted a host-CLI detection this build does NOT have and never had: the
+  # value is this run's RECORDED engine (autopilot.json, else config.json, else
+  # the literal fallback), so two repos differing only in that field print
+  # different orchestrators from one session. Fix round 1 cured the same claim
+  # in the `engines` table's provenance label; this is the same defect in the
+  # text printed at preflight, and the wording below is deliberately the table's.
+  say "   WHY THIS SHAPE: copilot is employer-paid and effectively free while claude"
+  say "   is billed, so every role beneath the orchestrator is copilot, and a claude"
+  say "   role is only ever a choice you record. THE ORCHESTRATOR ROW IS THIS RUN'S"
+  say "   RECORDED ENGINE — read out of autopilot.json, or config.json when this run"
+  say "   has none — and NOTHING HERE DETECTS THE CLI you are driving from. Each row"
+  say "   names the file its value came out of; read the table that way."
+  say "   OVERRIDE IT WITH A SETTING, not with an answer you retype each night:"
+  say "     $SELF_CMD record engines.reviewer.engine claude"
+  say "     $SELF_CMD record engines.tester.model   <model>"
+  say "   A table recorded before a run is applied as it stands and this item is not"
+  say "   raised at all. Read it back any time with \`$SELF_CMD engines\`."
+  say "   WHAT READS THESE ROWS TODAY: the delegate and tester rows are stamped into"
+  say "   a minted brief; the other four are recorded and reported only — nothing"
+  say "   launches from them yet, and this table does not claim otherwise."
+  ap_set engines.settledBy "the recommended table, reported and recorded at preflight" \
+    || die "preflight: could not record the engine matrix."
+  ap_set engines.settledAt "$(now)" \
+    || die "preflight: could not record the engine matrix's timestamp."
+  say "   RECORDED — so it is never raised again, and nothing here waits on anybody."
+  return 0
+}
+
 pf_q_number_one() {
-  local choice eng out rc decision
+  local choice eng out rc prior_eng enabled
   local what="the preflight Number One choice could not be applied."
   choice="$(ap_j numberOne.choice)"
   if [ -n "$choice" ] && [ -n "$(ap_j numberOne.appliedAt)" ]; then
     say ""
     say "6. Number One: already recorded $choice (engine $(ap_j numberOne.engine)) — not asking."
+    # S352: QUESTION 7 RUNS ON EVERY EXIT PATH OF THIS ONE. `cmd_preflight` is
+    # byte-identical to the shipped build and is not this session's to edit, so
+    # the new question is called from here; `pf_q_engines`'s once-guard is what
+    # makes three call sites exactly one question.
+    pf_q_engines
     return 0
   fi
+  # S352 FIX ROUND 1 (D1) — A RECORDED `numberOne.engine` IS HIS SETTING, NOT A
+  # BLANK TO FILL IN. This question used to read the RUN's engine here and then
+  # `ap_set numberOne "$decision"` — a WHOLESALE replace of the object — the
+  # moment `numberOne.choice` was unset. On a repo recorded before the choice
+  # existed that silently turned his `claude` into the run engine AND dropped
+  # every sibling key he had put beside it, while `engines` went on printing
+  # "recorded in numberOne.engine (the compatible read)" over the value it had
+  # just destroyed. `DELEGATION.md` promises the opposite in his own reference:
+  # *nothing migrates it*, because a migration is the only way to lose a
+  # captain's recorded setting. So: settling `choice` may ADD fields and may
+  # never replace or drop one, and the engine it applies is HIS if he recorded
+  # one — which is also what the already-settled branch below has always done.
+  prior_eng="$(ap_j numberOne.engine)"
   eng="$(ap_j engine)"
   if [ -z "$choice" ]; then
     say ""
-    say "6. Number One: RECOMMENDED: ON, using the run's engine ($eng)."
+    if [ -n "$prior_eng" ]; then
+      eng="$prior_eng"
+      say "6. Number One: RECOMMENDED: ON, using its RECORDED engine ($eng, from numberOne.engine — nothing here migrates it)."
+    else
+      say "6. Number One: RECOMMENDED: ON, using the run's engine ($eng)."
+    fi
     choice="on"
     if pf_prompt "6. Enable Number One for this run? ON is recommended; its engine is $eng." "ON"; then
       case "$PF_VALUE" in
@@ -2088,14 +2396,20 @@ pf_q_number_one() {
     else
       say "   Nobody is there: PROCEEDS on the recommended default, ON."
     fi
-    decision="$("$PY" - "$choice" "$eng" "$(now)" <<'PY'
-import json, sys
-choice, engine, ts = sys.argv[1:]
-print(json.dumps({"choice": choice, "enabled": choice == "on",
-                  "engine": engine, "settledAt": int(ts)}))
-PY
-)" || die "preflight: could not assemble the Number One decision."
-    ap_set numberOne "$decision" || die "preflight: could not record the Number One decision."
+    # FIELD BY FIELD, IN THE SHIPPED ORDER. `ap_set` merges into the object
+    # that is already there, so a sibling key survives; the engine is written
+    # ONLY when there was nothing of his to keep. With no `numberOne` at all
+    # this leaves exactly the four keys the shipped build left, in the same
+    # order, which is the control that proves the already-right path did not
+    # move.
+    enabled=false
+    [ "$choice" = "on" ] && enabled=true
+    ap_set numberOne.choice  "$choice"  || die "preflight: could not record the Number One decision."
+    ap_set numberOne.enabled "$enabled" || die "preflight: could not record the Number One decision."
+    if [ -z "$prior_eng" ]; then
+      ap_set numberOne.engine "$eng" || die "preflight: could not record the Number One decision."
+    fi
+    ap_set numberOne.settledAt "$(now)" || die "preflight: could not record the Number One decision."
   else
     eng="$(ap_j numberOne.engine)"
     say "6. Number One: applying the recorded choice $choice ($eng); not asking again."
@@ -2114,11 +2428,13 @@ PY
       "Number One was requested $choice with engine $eng, but the LCARS verb refused (exit $rc): $out" \
       "$recovery" \
       "the choice is preserved, but it is not recorded as applied."
+    pf_q_engines   # S352 — see the note above; it runs on every exit path.
     return 0
   fi
   ap_set numberOne.appliedAt "$(now)" || die "preflight: could not record Number One's application."
   pf_withdraw_say "$what" "the recorded Number One choice was applied by its LCARS verb."
   say "   Number One $choice applied with the run's engine $eng."
+  pf_q_engines   # S352 — see the note above; it runs on every exit path.
 }
 
 # cmd_preflight — the one round. Exits 10 when something stopped it, which is
@@ -2435,6 +2751,7 @@ PY
 cmd_record() {
   [ $# -ge 1 ] || die "record: <dotted.key> <value>"
   require_state
+  local r=""   # S352 — the role named inside an `engines.<role>.…` key
   case "$1" in
     captainOnlySteps)
       if [ -n "${2-}" ]; then
@@ -2444,6 +2761,33 @@ cmd_record() {
       ;;
     captainOnlySteps.*)
       die "record: replace the complete array with \`$SELF_CMD record captainOnlySteps '<json-array>'\` so neededBy can be checked."
+      ;;
+    engines|engines.*)
+      # S352. IT GOES THROUGH `ap_set` LIKE EVERY OTHER KEY — there is no new
+      # writer here. What is added is a REFUSAL AT THE DOOR: an engine name
+      # LCARS does not have, or a role nothing downstream can attribute, would
+      # otherwise be stamped verbatim into a delegate's brief as the engine it
+      # must run on, and a brief that names a nonexistent engine cannot be
+      # obeyed. Three shapes are legal: `engines.<role>.engine`,
+      # `engines.<role>.model`, and the settlement keys preflight writes.
+      case "$1" in
+        engines.settledAt|engines.settledBy|engines) : ;;
+        engines.*.engine)
+          r="${1#engines.}"; r="${r%.engine}"
+          engine_role_ok "$r" \
+            || die "record: '$r' is not one of the roles this matrix names. They are: $ECH_ROLES. Those are the roles the worker path can already attribute spend to, so a seventh one would name something nothing downstream can see."
+          [ -z "${2-}" ] || engine_name_ok "${2-}" \
+            || die "record: '${2-}' is not an engine LCARS has. They are: claude copilot. A brief is STAMPED with this value as the engine its delegate must run on, so an unknown one would mint a hand-off nobody can obey. Read the table back with \`$SELF_CMD engines\`."
+          ;;
+        engines.*.model)
+          r="${1#engines.}"; r="${r%.model}"
+          engine_role_ok "$r" \
+            || die "record: '$r' is not one of the roles this matrix names. They are: $ECH_ROLES."
+          ;;
+        *)
+          die "record: '$1' is not a key in the engine matrix. It takes \`engines.<role>.engine\` and \`engines.<role>.model\`, for the roles: $ECH_ROLES. Read the current table with \`$SELF_CMD engines\`."
+          ;;
+      esac
       ;;
     localOnly|local-only|local_only|localonly)
       case "$(printf '%s' "${2-true}" | tr 'A-Z' 'a-z')" in
@@ -2772,7 +3116,12 @@ cmd_watch() {
   [ $# -eq 0 ] || die "watch: no limit; use watch without arguments"
   local previous="" event plan sleeper="" m failure failures silents
   local wtab; wtab="$(printf '\t')"
+  # EVERY COLUMN THE PRODUCER EMITS, PLUS THE REMAINDER (S352 fix round 2,
+  # Item 2). This bound TEN of thirteen, so `wline` held `limit`, `limitsrc`,
+  # `blocked` and the last words joined by tabs. `wextra` is the guard: it must
+  # come back empty, and `delegate_row_extra` says so if it does not.
   local wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wline
+  local wlimit wlimitsrc wblocked wextra
   local interval="${LCARS_ECH_WATCH_INTERVAL:-5}"
   case "$interval" in ''|*[!0-9.]*|.*|*.*.*) die "watch: invalid poll interval" ;; esac
   trap '[ -z "$sleeper" ] || { kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; }; exit 0' TERM INT HUP
@@ -2797,8 +3146,9 @@ cmd_watch() {
     # A SILENT DELEGATE IS A WAKE, exactly as a failed-and-idle mission is
     # (S351) — same witness loop, same `event` string, same `watch.log`.
     silents=""
-    while IFS="$wtab" read -r wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wline; do
+    while IFS="$wtab" read -r wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wlimit wlimitsrc wblocked wline wextra; do
       [ -n "${wdid:-}" ] || continue
+      delegate_row_extra cmd_watch "${wextra:-}"
       [ "${wsilent:-0}" = "1" ] || continue
       # THE EVENT CARRIES NO MINUTES, ON PURPOSE. `event` is compared against
       # `previous` to decide whether this is NEWS; a figure that ticks every
@@ -3163,10 +3513,42 @@ SF_EOF
   # delegate is not one. It also means that with NO delegates recorded this
   # whole block emits nothing at all, which is what keeps the mission report
   # byte-identical to the shipped one.
-  local dn=0 du=0 did dunit dtier dstat dmis delapsed dbasis dsilent dsince dline
-  local dlimit dlimitsrc duwhy
-  while IFS="$tab" read -r did dunit dtier dstat dmis delapsed dbasis dsilent dsince dlimit dlimitsrc dline; do
+  local dn=0 du=0 db=0 did dunit dtier dstat dmis delapsed dbasis dsilent dsince dline
+  local dlimit dlimitsrc duwhy dblocked dextra
+  while IFS="$tab" read -r did dunit dtier dstat dmis delapsed dbasis dsilent dsince dlimit dlimitsrc dblocked dline dextra; do
     [ -n "${did:-}" ] || continue
+    # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
+    delegate_row_extra cmd_stalled "${dextra:-}"
+    # --- THE BLOCKED LANE (S352 fix round 1, D5), AND IT COMES FIRST. A
+    # delegate has exactly one channel to the ECH — its beat — so a beat whose
+    # line opens `BLOCKED` is an ESCALATION, and an escalation that only
+    # surfaces once the delegate has ALSO been quiet for half an hour is a
+    # channel with half an hour of latency built into it. The brief now names
+    # this beat as the way out, so this report is the other half of that
+    # promise: it is reported the moment it is recorded, whether the delegate is
+    # quiet or not, and it is counted apart from a silence because it is the
+    # opposite fact — the delegate spoke.
+    if [ "${dblocked:-0}" = "1" ]; then
+      db=$((db + 1))
+      printf 'BLOCKED DELEGATE: %s (unit %s, tier %s) — it has RAISED A BLOCK with you through its beat and is waiting on an answer: "%s"\n' \
+        "$did" "$dunit" "$dtier" "$dline"
+      printf '  → this is the delegate escalation channel: a beat whose line opens BLOCKED is how a delegate reaches the ECH WITHOUT interrupting the captain. It is not a verdict and it advances nothing — it is a question for you.\n'
+      printf '  → what to do, and one of these is the answer: ANSWER it (re-brief it, or tell it the call) and have it beat again; REPLACE it (`%s delegate close %s`, then `%s delegate %s`); or, only if it is a call he owns, RAISE it with the captain (`%s ask "<what you need from him>" --mission %s`).\n' \
+        "$SELF_CMD" "$did" "$SELF_CMD" "$dunit" "$SELF_CMD" "$dmis"
+      printf '  → what clears this line: its NEXT beat — `%s beat %s "<one line of progress>"` — because the block is read from its latest beat only. Every earlier beat is still on disk.\n' \
+        "$SELF_CMD" "$did"
+      # AND THE FACTS THIS LANE DID NOT CARRY, so nothing measured is lost to
+      # the choice of lane: a blocked delegate can ALSO be past the limit, or
+      # have a clock nothing can read.
+      case "$dbasis" in
+        broken|future|none)
+          printf '  ⚠ and its clock CANNOT BE READ (%s), so how long it has been waiting is not known.\n' "$dbasis" ;;
+        *)
+          [ "${dsilent:-0}" = "1" ] && printf '  ⚠ and it has ALSO gone quiet past the limit — no beat for %sm, against %s.\n' \
+            "$((delapsed / 60))" "$(beat_limit_said)" ;;
+      esac
+      continue
+    fi
     [ "${dsilent:-0}" = "1" ] || continue
     # --- THE UNTIMEABLE LANE (S351 fix round 1, D2). A delegate whose clock
     # cannot be read is NOT a delegate that is quiet, and it is certainly not
@@ -3243,6 +3625,13 @@ DELEGATE_SILENCE_EOF
   if [ "$du" -gt 0 ]; then
     printf '%s delegate record(s) CANNOT BE TIMED — that is a broken record, not an all-quiet, and each line above names what clears it.\n' \
       "$du"
+  fi
+  # ITS OWN TALLY TOO (S352 fix round 1, D5). A block is not a silence and must
+  # not be added to one: a silent delegate has said nothing, a blocked one has
+  # said the one thing it most needed to.
+  if [ "$db" -gt 0 ]; then
+    printf '%s delegate(s) have RAISED A BLOCK and are waiting on the ECH — that is the escalation channel working, not a fault. Each line above quotes what it needs and names what clears it.\n' \
+      "$db"
   fi
   return 0
 }
@@ -5008,10 +5397,11 @@ cmd_report() {
   require_state
   [ -n "$out" ] || out="$APDIR/report.html"
   mkdir -p "$(dirname "$out")"
-  "$PY" - "$APJSON" "$MISSIONS" "$LCARS_DIR/autopilot-overrides.jsonl" "$out" <<'PY'
+  "$PY" - "$APJSON" "$MISSIONS" "$LCARS_DIR/autopilot-overrides.jsonl" "$out" \
+        "$LCARS_DIR/lcars-feedback.jsonl" <<'PY'
 import json, os, sys
 
-apj, missions_dir, ovl, out = sys.argv[1:5]
+apj, missions_dir, ovl, out, fbl = sys.argv[1:6]
 try:
     d = json.load(open(apj))
 except Exception:
@@ -5125,6 +5515,38 @@ if os.path.exists(ovl):
         bits.append("evidence: %s" % (o.get("evidence") or "(none recorded)"))
         ov_items.append("<li>%s</li>" % " &mdash; ".join(esc(b) for b in bits))
 
+# ==== S352: TWO LISTS, NOT ONE PILE =====================================
+# `lcars-feedback.jsonl` already held "LCARS bugs, gaps, friction, wins, YOUR
+# OWN MISTAKES" — all in one pile, which is exactly why it fed nothing. "The
+# ECH fell short" and "LCARS fell short" are different piles because they feed
+# different work: one is a brief to write better next time, the other is a bug
+# to fix in the harness. They are SPLIT BY THE RECORDED `kind`, never guessed at
+# from the text, and an entry of neither kind appears in NEITHER list — these
+# two are not a dumping ground for whatever else the ledger carries.
+ech_items, bug_items_fb = [], []
+if os.path.exists(fbl):
+    for line in open(fbl):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(e, dict):
+            continue
+        kind = e.get("kind")
+        if kind not in ("ech-shortfall", "lcars-bug"):
+            continue
+        bits = []
+        if e.get("delegate"):
+            bits.append("delegate %s" % e["delegate"])
+        if e.get("mission"):
+            bits.append(str(e["mission"]))
+        bits.append(str(e.get("what") or e.get("note") or "(no text recorded)"))
+        row = "<li>%s</li>" % " &mdash; ".join(esc(b) for b in bits)
+        (ech_items if kind == "ech-shortfall" else bug_items_fb).append(row)
+
 def ul(uid, items):
     body = "\n".join(items) if items else "<li>none yet</li>"
     return '<ul id="%s">\n%s\n</ul>' % (uid, body)
@@ -5156,6 +5578,17 @@ html = """<!doctype html>
 %(bugs)s
 <h2 id="overrides-title">Overrides recorded</h2>
 %(overrides)s
+<h2 id="ech-shortfalls-title">Where the ECH fell short</h2>
+<p class="none">What a delegate (or the ECH itself) recorded as the ECH&rsquo;s own
+shortfall: a vague brief, a boundary it had to guess, a question the ECH should
+have answered. An explicit &ldquo;nothing found&rdquo; is a legal entry; silence
+is not.</p>
+%(echshort)s
+<h2 id="lcars-bugs-title">Where LCARS fell short</h2>
+<p class="none">What the same hand-backs recorded against the FACTORY: a verb
+that refused wrongly, a stage that lied, a message nobody could act on. A
+separate list because it feeds a different fix.</p>
+%(lcarsbugs)s
 </body></html>
 """ % {
     "spec": esc(d.get("spec") or "(no spec recorded)"),
@@ -5164,6 +5597,8 @@ html = """<!doctype html>
     "shots": ul("shots", shot_items),
     "bugs": ul("bugs", bug_items),
     "overrides": ul("overrides", ov_items),
+    "echshort": ul("ech-shortfalls", ech_items),
+    "lcarsbugs": ul("lcars-bugs", bug_items_fb),
 }
 open(out, "w").write(html)
 print(out)
@@ -5171,6 +5606,8 @@ PY
   local rc=$?
   [ "$rc" -eq 0 ] || die "report: the renderer failed"
   say "  per milestone: the stage, Number One's verdict, the live-check verdict, the shots, the bugs."
+  say "  plus TWO SEPARATE LISTS off the one feedback ledger: where the ECH fell short,"
+  say "    and where LCARS fell short. One pile fed nothing; these two feed different fixes."
   say "  nothing on that page comes from a clock — re-render it and it is identical."
   return 0
 }
@@ -6106,15 +6543,30 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
 - \`lcars-respond/respond.sh\`
   answer a stage's own grill when it asks you something.
 - \`lcars-log/log.sh --parent ${mid:-$unit} --prd <f>\`
-  file a bug you found against this Mission.
+  file a bug you found against this Mission. The PRD is a file YOU write first.
+  It needs a \`# Mission: <title>\` line and a \`**Type:** bug\` line, and the
+  shape to copy is staged in this repo at \`$LCARS_DIR/bug-prd.md\` (its source
+  is \`$SKILLS_DIR/lcars-eeh/bug-prd.md\`) — read that file before you write
+  one. Lead its Acceptance Criteria with \`Observed live: <the exact output you
+  saw>\`, with the real command, ids and paths: \`lcars log\` does not require
+  it, but it is the single thing that got fixes through first time, because the
+  worker can reproduce it.
 - \`lcars-resolve-logs/resolve-logs.sh --parent ${mid:-$unit}\`
   work the bugs already logged against it.
 - \`lcars-xo/xo.sh\`
   Number One, the verifier.
 
 The ECH keeps these to ITSELF and you do not run them: \`land\`, \`approve\`,
-\`policy\`, \`live-check\`, \`file-bug\`, \`push-gated\`. They are the gate in § 5, and
-they are the reason nothing advances on your word."
+\`policy\`, \`live-check\`, \`file-bug\`, \`push-gated\`, \`ask\`. They are the gate in § 5, and
+they are the reason nothing advances on your word.
+
+\`ask\` is on that list for its own reason: it prints **QUESTION FOR THE
+CAPTAIN** and fires his notifier, and § 4 of this brief forbids you spending his
+interrupt budget — that budget is the ECH's. \`file-bug\` is on it for a
+related one: it is the ECH filing its OWN bugs in its own words, behind an
+evidence-first template, and it is not your filing route. **Your route to the
+ECH is the \`BLOCKED:\` beat named at the end of this section, and your route for
+a defect is \`lcars log\`.**"
 
   # AT T2, ONE MORE THING IS IN THIS DELEGATE'S OWN SCOPE (D4). T2 used to
   # arrive only as a quoted description of what T2 *is* — never as an
@@ -6137,7 +6589,12 @@ evidence and its bug list.
   brief: \`ORCHESTRATION.md\` § *The loop* (step 2) and § *The tester opens the
   real product first* — \`lcars-eeh docs orchestration\`.
 - Its findings come back to the ECH through YOUR hand-back. You do not file
-  them and you do not act on them as a verdict."
+  them and you do not act on them as a verdict.
+- S352: its BUG LIST additionally goes into the factory through \`lcars log\`
+  against this Mission, one bug per item — see § 3, *Standing up your
+  fresh-context tester*. That is the factory's own front door for a defect, and
+  it is a filing, not a verdict: the ECH still reads Number One, still runs its
+  own live check, and still files its OWN bugs with \`file-bug\` (§ 5)."
   fi
 
   local others=""
@@ -6265,8 +6722,15 @@ $wbranch
   this unit's gate and what it printed. Real commands, real output, real
   identifiers.
 - **The tester's bug list** — every bug it found, one per item, in its words.
-  The ECH files these; you do not. An empty list is a legitimate answer ONLY if
-  the tester actually ran: say which it is.
+  **You FILE these through \`lcars log\`** against this Mission, one filing per
+  bug (§ 3, *Standing up your fresh-context tester*, has the command): that is
+  this unit's absorption route, and T1's obligation is worth nothing without it.
+  What you do NOT do is **ADJUDICATE** them — you do not decide which of them
+  are real, you do not fix them inline, and you do not hand-write them into this
+  report **in place of filing** them. Nothing you file is a verdict, and the ECH
+  reads Number One, runs its own live check and files its OWN bugs regardless
+  (§ 5). An empty list is a legitimate answer ONLY if the tester actually ran:
+  say which it is.
 - **Who the tester was and what it never saw** — fresh context is the mechanism,
   not the label. If the tester saw your reasoning, it is not a T2 tester and
   this unit has not met its contract. Say so rather than reporting one anyway.
@@ -6328,7 +6792,10 @@ PYALLOC
   # mission record on disk at …" — so an unattended ECH reading its own record
   # saw a brief with a goal. A record that over-claims is worse than no record:
   # it is the one thing nothing downstream re-checks.
-  local parts="\"output-format\",\"verbs\",\"boundaries\",\"tier-contract\",\"summaries-only\",\"ech-gate\",\"workspace\",\"artifacts\",\"beat\""
+  # S352 adds three parts every brief now carries: the engine stamp, the
+  # front-door clause and the two-list sign-off. RECORDED BY THE MINTER — the
+  # record is what a reader consults, never a grep of the rendered file.
+  local parts="\"output-format\",\"verbs\",\"boundaries\",\"tier-contract\",\"summaries-only\",\"ech-gate\",\"workspace\",\"artifacts\",\"beat\",\"engine-stamp\",\"front-door\",\"two-list-signoff\""
   [ "$gsrc" = "none" ] || parts="\"goal\",$parts"
   if [ "$tier" = "T2" ]; then
     parts="$parts,\"fresh-tester\",\"tester-deliverable\",\"t1-inherited\""
@@ -6400,6 +6867,252 @@ This delegate is **$did**, recorded at \`delegates.$did\`. When you are done the
 ECH closes you with \`$SELF_CMD delegate close $did\` — which marks YOU done and
 moves neither the Mission's stage nor its verdict."
 
+  # ==== S352: {{ENGINE_STAMP}} — the engine this role must run on ==========
+  # THE PRODUCER STAMPS AND RECORDS IT. Which engine a role runs on is a COST
+  # decision (copilot is employer-paid; claude is billed), so it is the
+  # captain's to set and the ECH's to pass on — never a delegate's to pick
+  # mid-unit. The values come out of the role -> engine matrix, which is the
+  # same function `engines` prints, so the screen and the brief cannot disagree.
+  local deleng delmodel tsteng tstmodel estamp delrec delsub costsaid
+  deleng="$(engine_for_role delegate)"
+  delmodel="$(engine_model_for_role delegate)"
+  # S352 FIX ROUND 1 (D8) — A FREE→BILLED SUBSTITUTION IS A FACT, AND ITS
+  # PRODUCER RECORDS IT. With `copilot` recorded and absent, the matrix resolves
+  # the row to claude and SAYS SO on its own line — on the `engines` screen. The
+  # brief said only "you run on claude … a cost decision the captain made once",
+  # which is a sentence about an engine he never recorded, and
+  # `delegates.<id>.engine` held `claude` with no trace of where it came from.
+  # The INTENDED engine for this row is what he recorded, else the documented
+  # default (copilot for every role below the orchestrator); a resolved engine
+  # that differs from it is a substitution THIS RUN made, not a decision anyone
+  # took, and both the brief and the record now carry it.
+  delrec="$(ap_j engines.delegate.engine)"
+  [ -n "$delrec" ] || delrec="copilot"
+  delsub=0
+  [ "$delrec" = "$deleng" ] || delsub=1
+  estamp="## 6. The engine you run on
+
+**You run on \`$(inert "$deleng")\`, model \`$(inert "$delmodel")\`.** That is the
+\`delegate\` row of the ECH's recorded role -> engine matrix. Read the whole table
+back for yourself:
+
+    bash $SELF engines
+
+**YOU MAY NOT CHOOSE ANOTHER ENGINE.** Not a faster one, not a cheaper one, not
+the one you happen to be more fluent in. Copilot is employer-paid and Claude is
+billed, so which engine a role runs on is a cost decision the captain made once
+and the ECH recorded — it is not yours to re-decide, and a unit done on an
+engine nobody agreed to is a bill nobody agreed to. If you believe this is the
+wrong engine for this unit, that is a question **up to the ECH** (§ 4), not a
+substitution you make quietly.
+
+**EVERY SEAT YOU OPEN TAKES THIS SAME ROW.** You may divide this unit between
+sub-delegates — your tier contract allows it — and there is no separate row for
+one: **every seat you open, whether you call it a sub-delegate, a helper or just
+a second window, runs on \`$(inert "$deleng")\`, model \`$(inert "$delmodel")\`.**
+Three seats on an engine nobody stamped is three bills nobody agreed to, and the
+rule is not about which engine YOU prefer — it is about every seat this unit
+pays for. If a seat genuinely has to be a different engine, **you may not open
+it without asking the ECH** first.
+
+**AND CHECK THE SEAT YOU ARE SITTING IN.** A brief pasted into a window you did
+not choose is not a choice you made — and it bills the whole unit just the same,
+so \"I chose nothing\" is a true report and a useless one.
+**If the seat you are in is not \`$(inert "$deleng")\`, STOP.** Do not start the
+work and do not get going in whichever one you happen to be in. Then say so:
+
+    bash $SELF beat $did \"BLOCKED: this seat is <engine>, the brief stamps $(inert "$deleng")\""
+  if [ "$delsub" = 1 ]; then
+    case "$deleng" in
+      claude) costsaid="**Claude is BILLED** and copilot is employer-paid, so that substitution turned a free row into a billed one." ;;
+      *)      costsaid="\`$(inert "$deleng")\` is employer-paid, so no new spend follows from it." ;;
+    esac
+    estamp="$estamp
+
+**A SUBSTITUTION WAS MADE, AND NOBODY RECORDED IT AS A CHOICE.** The engine
+recorded for this row was \`$(inert "$delrec")\`, and \`$(inert "$delrec")\` is
+**not installed** on this machine — so THIS RUN substituted
+\`$(inert "$deleng")\` to give you something that can actually launch.
+$costsaid The paragraph above still holds, with one correction to it:
+\`$(inert "$deleng")\` is **not a choice the captain made** for this row — the
+machine resolved it when it could not find the one he did. It is recorded at
+\`delegates.$did.engineRecorded\` and \`delegates.$did.engineSubstituted\`, so
+nothing has to read this paragraph back to learn what happened. If that trade is
+wrong for this unit, say so with a \`BLOCKED:\` beat — it is a question for the
+ECH, not a thing to quietly spend."
+  fi
+  if [ "$tier" = "T2" ]; then
+    tsteng="$(engine_for_role tester)"
+    tstmodel="$(engine_model_for_role tester)"
+    estamp="$estamp
+
+**Your fresh-context tester runs on \`$(inert "$tsteng")\`, model
+\`$(inert "$tstmodel")\`** — the \`tester\` row of the same matrix. The same rule
+applies to it: you may not pick a different engine for your tester either."
+    # THE TESTER ROW SUBSTITUTES BY THE SAME RULE, AND IS SAID THE SAME WAY
+    # (D8). A seat whose engine nobody recorded is no less billed for being the
+    # second one this unit opens.
+    local tstrec
+    tstrec="$(ap_j engines.tester.engine)"
+    [ -n "$tstrec" ] || tstrec="copilot"
+    if [ "$tstrec" != "$tsteng" ]; then
+      estamp="$estamp
+Its row SUBSTITUTED too: \`$(inert "$tstrec")\` is what was recorded for it and
+is **not installed** here, so this run resolved it to \`$(inert "$tsteng")\` —
+again the machine's resolution, not a choice anybody made."
+    fi
+  fi
+
+  # ==== S352: {{FRONT_DOOR}} — the front-door clause ========================
+  # WHY IT IS IN THE BRIEF AND NOT ONLY IN THE PLAYBOOK. The doctrine is real,
+  # detailed and correct — and it is prose aimed at ONE reader. HCM 4a and the
+  # Holodeck sequence are written for the ECH, and A DELEGATE NEVER READS THEM.
+  # So the rule travels with the hand-off, stated once, with the verbs named.
+  local front
+  front="
+### The front door, and it is not optional
+
+These are the verbs. **Drive through the HUMAN interfaces** — the same ones the
+captain uses — and never hand-step the stage machine underneath them
+(\`HOLOGRAM-COMMAND-MODE.md\` § 4a):
+
+- \`lcars file\` — file a Mission. A new unit of work enters here, never by
+  hand-writing a mission record.
+- \`lcars log\` — file a bug you found against this Mission. This is how a defect
+  gets fixed; you do not fix it by editing around it.
+- \`lcars answer\` — answer a gate the factory is waiting on.
+- \`lcars replan\` — re-anchor ONE ticket whose premises the code contradicts.
+- \`bash $SELF exec <skill>/<script>\` — reach a sibling skill's own script by the
+  route that resolves under either install, with that script's real flags.
+- **Screens go through the HOLODECK.** Any work with a user-visible surface takes
+  the Holodeck route — derive, then promote within one of its two legal scopes —
+  and the \`derive\` wait is ASYNCHRONOUS, so it is waited on, not polled into.
+  \`HOLOGRAM-COMMAND-MODE.md\` has the sequence; read it before you touch a screen.
+
+**Never build what the factory builds.** If a verb already produces an outcome,
+producing it another way is not a shortcut, it is a second route that nothing
+reviews. **THE QUALITY IS IN THE HARNESS** — the grills, the gates, the fresh
+reviewers, the flip-flop proof — so going around the harness throws the quality
+away and hands back something that merely looks finished.
+
+### What you decide alone, and what goes UP
+
+**Decide alone:** how to do the work, which order, which files, how to test it,
+and every stumble you can cure with the verbs above. That is what your tier
+bought.
+
+**Goes UP to the ECH** — never the captain: a scope change, a product call he
+owns, a conflict with a standing rule, or a question only the ECH can settle.
+Raise it with the ECH and it decides whether the captain hears about it at all.
+The captain's interrupt budget has exactly **FOUR** categories
+(\`HOLOGRAM-COMMAND-MODE.md\` § 9), it is the ECH's to spend, and there is
+**no fifth category for a delegate**. Your problem is the ECH's problem, not his.
+
+**And you do not mark anything verified, approved or landed** — not the unit, not
+a ticket, not the Mission. That is § 5, and it is the hardest rule in this brief.
+
+### ABSORBING A STUMBLE — by using the factory, never by going round it
+
+A delegate that sends every red test back up is worth nothing over the ECH doing
+the unit itself. So absorb it — **through the factory's own verbs**:
+
+- a **defect in the work** -> \`lcars log\` it against this Mission and let the
+  factory fix it;
+- a **ticket whose premises the code contradicts** -> \`lcars replan\` that one
+  ticket;
+- a **question only the ECH can settle** -> UP to the ECH, through a
+  \`BLOCKED:\` beat — the command is at the end of this section. You do not run
+  \`$SELF_CMD ask\`: that verb prints \"QUESTION FOR THE CAPTAIN\" and fires his
+  notifier, and his interrupt budget is the ECH's to spend, not yours.
+
+**THESE ARE NOT ABSORPTION, and none of them is ever the answer:**
+
+- **hacking past a red test** — deleting it, skipping it, loosening its
+  assertion, or making it assert something it was not written to assert;
+- **building a parallel control beside the real one** — a second, dead
+  implementation that goes green while the live one stays broken;
+- **hand-stepping a stage** to get moving — writing the record a stage would
+  have written, so the board says a stage ran that never did.
+
+Each of those produces the **green-but-wrong decoy**: work that reports success
+and delivers nothing, which is the exact class the factory already has machinery
+against. If you are stuck and the only way forward you can see is one of the
+three, **you are not stuck on the work — you are at a question for the ECH.**
+
+### RAISING IT — THIS IS THE CHANNEL, and it is the only one you have
+
+One beat, whose line **opens with \`BLOCKED:\`**:
+
+    bash $SELF beat $did \"BLOCKED: <what you are stuck on, and what you need from the ECH>\"
+
+That beat is how you reach the ECH, and **the ECH reads it**: a \`BLOCKED:\` beat
+is reported by \`$SELF_CMD stalled\` — which the ECH's hourly heartbeat already
+runs — **immediately, without waiting out the silence limit**, with your words
+quoted in full, and it is flagged beside you on \`$SELF_CMD status\`. So it is
+not a message into the dark.
+
+It **does not interrupt the captain.** Nothing about it reaches him unless the
+ECH decides it should, which is § 4's rule working rather than an exception to
+it. It is **not a verdict and it advances nothing** — it is you saying you need
+an answer. Having said it, **stop on that step** and wait; do not reach for one
+of the three above while you wait. The block clears on your NEXT beat, so when
+you are moving again, beat again."
+  if [ "$tier" = "T2" ]; then
+    front="$front
+
+### Standing up your fresh-context tester (T2)
+
+You stand it up yourself, at this unit's gate, when the work is otherwise done.
+
+- **What you hand it:** this unit's GOAL (§ 1) and **the real product** — the
+  running thing, its repo, its branch. Nothing else.
+- **What you must NOT hand it: your reasoning.** Not your plan, not your
+  commentary, not why you believe it works. Fresh context is the mechanism, not
+  the label: your reasoning is precisely what makes a reviewer agree with a
+  wrong premise.
+- **What comes back:** EVIDENCE (what it ran, what it printed) and a BUG LIST.
+- **The bug list is FILED THROUGH \`lcars log\`** against this Mission, one bug
+  per item, so each one enters the factory as work. You do not hand-write bugs
+  into your report in place of filing them, and **you do not fix them inline** —
+  a fix that dodges the factory is the decoy class above. Nothing you file is a
+  verdict, and the ECH files its OWN bugs regardless (§ 5).
+- **Its own rules are already written down: READ THEM, do not paraphrase them.**
+  \`ORCHESTRATION.md\` § *The loop* (step 2) and § *The tester opens the real
+  product first* — \`bash $SKILLS_DIR/lcars-eeh/eeh.sh docs orchestration\`.
+  A second copy of a rule is a rule that drifts.
+
+### The two-list sign-off, on exit
+
+Before you are closed out, make **TWO** ledger writes. They are different piles
+on purpose — one is about the ECH, one is about LCARS — and one pile that mixes
+them feeds nothing:
+
+    bash $SELF ledger feedback '{\"kind\":\"ech-shortfall\",\"delegate\":\"$did\",\"what\":\"<where the ECH fell short: a brief that was vague, a boundary you had to guess, a question it should have answered>\"}'
+    bash $SELF ledger feedback '{\"kind\":\"lcars-bug\",\"delegate\":\"$did\",\"what\":\"<where LCARS fell short: a verb that refused wrongly, a stage that lied, a message you could not act on>\"}'
+
+An explicit **\"nothing found\"** is a legal entry for either, and
+**silence is not** — \`delegate close\` reports an INCOMPLETE HAND-BACK when
+either kind is missing, and an incomplete hand-back is a unit nobody can learn
+from."
+  fi
+  if [ "$tier" != "T2" ]; then
+    front="$front
+
+### The two-list sign-off, on exit
+
+Before you are closed out, make **TWO** ledger writes. They are different piles
+on purpose — one is about the ECH, one is about LCARS — and one pile that mixes
+them feeds nothing:
+
+    bash $SELF ledger feedback '{\"kind\":\"ech-shortfall\",\"delegate\":\"$did\",\"what\":\"<where the ECH fell short: a brief that was vague, a boundary you had to guess, a question it should have answered>\"}'
+    bash $SELF ledger feedback '{\"kind\":\"lcars-bug\",\"delegate\":\"$did\",\"what\":\"<where LCARS fell short: a verb that refused wrongly, a stage that lied, a message you could not act on>\"}'
+
+An explicit **\"nothing found\"** is a legal entry for either, and
+**silence is not** — \`delegate close\` reports an INCOMPLETE HAND-BACK when
+either kind is missing, and an incomplete hand-back is a unit nobody can learn
+from."
+  fi
+
   # S352 fills these two. A renderer leaves an unsupported slot EMPTY rather
   # than printing its token: a brief with a raw {{TOKEN}} in it is a brief a
   # delegate has to guess at.
@@ -6409,22 +7122,24 @@ moves neither the Mission's stage nor its verdict."
   printf '%s\n' "$tpl" >"$tfile" || die "delegate: could not stage the template in $ddir"
   "$PY" - "$bpath" "$tfile" "$did" "$unit_i" "$tier" "$why" "$est" "$goal" "$mission" \
         "$statepath" "$contract" "$verbs" "$bounds" "$stamp" "$signoff" \
-        "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" <<'PYREND' \
+        "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" "$estamp" "$front" <<'PYREND' \
     || die "delegate: could not render the brief to $bpath"
 import sys
 (out, tfile, did, unit, tier, why, est, goal, mission, statepath,
  contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver, blimit,
- launcher) = sys.argv[1:21]
+ launcher, estamp, front) = sys.argv[1:23]
 tpl = open(tfile).read()
 slots = {
     "DELEGATE_ID": did, "UNIT": unit, "TIER": tier, "TIER_WHY": why,
     "ESTIMATE_SHOWN": est, "GOAL": goal, "MISSION": mission,
     "STATE_PATH": statepath, "TIER_CONTRACT": contract, "VERBS": verbs,
     "BOUNDARIES": bounds, "CREATED_AT": stamp, "SIGNOFF": signoff,
-    # NAMED AND EMPTY UNTIL S352 FILLS THEM. A renderer leaves an unsupported
-    # slot empty rather than printing its token: a brief with a raw token in
-    # it is a brief a delegate has to guess at.
-    "ENGINE_STAMP": "", "FRONT_DOOR": "",
+    # S352 FILLS THEM. Composed by the caller from the role -> engine matrix
+    # and from the front-door doctrine, with every leaf value rendered inert
+    # first. A renderer still leaves an UNSUPPORTED slot empty rather than
+    # printing its token: a brief with a raw token in it is a brief a delegate
+    # has to guess at.
+    "ENGINE_STAMP": estamp, "FRONT_DOOR": front,
     # D1 / D6 / D4. Each of these is composed by the caller, which rendered
     # every leaf value through `inert()` first.
     "ARTIFACTS": arts, "WORKSPACE": wbase, "TIER_DELIVERABLE": tdeliver,
@@ -6443,9 +7158,11 @@ PYREND
   [ -s "$bpath" ] || die "delegate: the brief at $bpath came out empty — refusing to record a delegate whose brief says nothing."
 
   ap_lock
-  "$PY" - "$APJSON" "$did" "$unit" "$tier" "$bpath" "$at" "$parts" "$gsrc" "$mid" "$brel" "$BEAT_LIMIT" <<'PY'
+  "$PY" - "$APJSON" "$did" "$unit" "$tier" "$bpath" "$at" "$parts" "$gsrc" "$mid" "$brel" "$BEAT_LIMIT" \
+        "$deleng" "$delmodel" "$delrec" "$delsub" <<'PY'
 import json, os, sys
-f, did, unit, tier, bpath, at, parts, gsrc, mid, brel, blim = sys.argv[1:12]
+(f, did, unit, tier, bpath, at, parts, gsrc, mid, brel, blim,
+ deleng, delmodel, delrec, delsub) = sys.argv[1:16]
 try:
     d = json.load(open(f))
 except Exception:
@@ -6466,6 +7183,22 @@ ds[did] = {"id": did, "unit": unit, "tier": tier, "briefPath": bpath,
            # WHERE THE GOAL CAME FROM, not left to be inferred (D1/D5):
            # prd-acceptance | prd-goal | state-title | none.
            "goalSource": gsrc,
+           # THE ENGINE AND MODEL THIS BRIEF WAS STAMPED WITH (S352). The
+           # PRODUCER records the fact: `delegate` resolved the matrix, so
+           # nothing downstream greps the rendered brief to learn which engine
+           # a delegate was told to run on.
+           "engine": deleng, "model": delmodel,
+           # AND THE ROW THAT WAS *RECORDED*, WHICH IS NOT ALWAYS THE ONE THAT
+           # RAN (S352 fix round 1, D8). With `copilot` recorded and absent, the
+           # matrix resolves the row to claude — a FREE row turned into a BILLED
+           # one — and `engine` above held `claude` with nothing beside it to say
+           # the captain had never recorded that. The producer records the fact:
+           # `engineRecorded` is the row's intended engine (his record, else the
+           # documented default) and `engineSubstituted` is written ONLY when
+           # this run had to resolve away from it, so its absence means "no
+           # substitution" rather than "nobody looked".
+           "engineRecorded": delrec,
+           **({"engineSubstituted": True} if delsub == "1" else {}),
            # THE SILENCE LIMIT THIS BRIEF WAS STAMPED WITH (S351 fix round 1,
            # D3). THE PRODUCER RECORDS THE FACT: `delegate` knows the limit it
            # wrote into § 2 of the brief, and without this field the divergence
@@ -6596,10 +7329,68 @@ cmd_delegate_close() {
     die "delegate close: $did is ALREADY CLOSED — at $clw (closedAt ${cl:-unknown}), unit $unit. Nothing was rewritten: a second close carries no new judgement and the only thing it could change is the first close time, which is the fact worth keeping. If the unit needs more work, that is a NEW delegate: \`$SELF_CMD delegate $unit\`."
   fi
   local at; at="$(now)"
-  ap_lock
-  "$PY" - "$APJSON" "$did" "$at" <<'PY'
+  # ==== S352: THE TWO-LIST SIGN-OFF, COUNTED HERE =========================
+  # The brief requires TWO ledger writes on exit — one `ech-shortfall`, one
+  # `lcars-bug` — because "the ECH fell short" and "LCARS fell short" are
+  # different piles that feed different work, and one pile fed nothing. An
+  # explicit "nothing found" is a LEGAL entry; SILENCE IS NOT, and silence is
+  # exactly what a close used to accept without a word.
+  #
+  # IT REPORTS, IT DOES NOT REFUSE. A close that refused would strand a finished
+  # delegate as permanently open over a missing ledger line, and `delegate
+  # close` is already the one verb in this family that carries no judgement.
+  # So the delegate is closed either way and the gap is NAMED.
+  #
+  # THE PRODUCER RECORDS THE COUNTS. Nothing downstream re-greps the ledger to
+  # learn whether this hand-back was complete.
+  local hb_counts hb_ech hb_bug hb_complete hb_created
+  # HOISTED OUT OF THE SUBSTITUTION BELOW ON PURPOSE: a nested `$( )` inside a
+  # command substitution that also carries a heredoc is not parsed by bash.
+  hb_created="$(ap_j "delegates.$did.createdAt")"
+  hb_counts="$("$PY" - "$LCARS_DIR/lcars-feedback.jsonl" "$did" "$hb_created" <<'PYHB'
 import json, os, sys
-f, did, at = sys.argv[1:4]
+f, did, created = sys.argv[1:4]
+try:
+    created = int(created)
+except Exception:
+    created = 0
+n = {"ech-shortfall": 0, "lcars-bug": 0}
+if os.path.exists(f):
+    for line in open(f):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(d, dict):
+            continue
+        k = d.get("kind")
+        if k not in n:
+            continue
+        # IT COUNTS THE WRITES THIS DELEGATE MADE. An entry that names the
+        # delegate is unambiguous; one that does not is credited only if it was
+        # written after this delegate was minted, so an older entry from a
+        # previous pass can never make a silent hand-back look complete.
+        if d.get("delegate") == did:
+            n[k] += 1
+        elif d.get("delegate") in (None, "") and int(d.get("ts") or 0) >= created:
+            n[k] += 1
+sys.stdout.write("%d %d\n" % (n["ech-shortfall"], n["lcars-bug"]))
+PYHB
+)"
+  hb_ech="$(printf '%s' "$hb_counts" | awk '{print $1+0}')"
+  hb_bug="$(printf '%s' "$hb_counts" | awk '{print $2+0}')"
+  if [ "$hb_ech" -gt 0 ] && [ "$hb_bug" -gt 0 ]; then
+    hb_complete=true
+  else
+    hb_complete=false
+  fi
+  ap_lock
+  "$PY" - "$APJSON" "$did" "$at" "$hb_ech" "$hb_bug" "$hb_complete" <<'PY'
+import json, os, sys
+f, did, at, hb_ech, hb_bug, hb_complete = sys.argv[1:7]
 d = json.load(open(f))
 ds = d.get("delegates") or {}
 rec = ds.get(did)
@@ -6608,6 +7399,10 @@ if not isinstance(rec, dict):
 # ONLY the delegate's own fields. No stage, no verdict, no mission record.
 rec["status"] = "done"
 rec["closedAt"] = int(at)
+# S352. WHICH LEDGER KINDS THIS HAND-BACK CARRIED, recorded by the verb that
+# counted them — never re-derived by a reader from the ledger file.
+rec["handback"] = {"echShortfall": int(hb_ech), "lcarsBug": int(hb_bug),
+                   "complete": hb_complete == "true"}
 ds[did] = rec
 d["delegates"] = ds
 tmp = f + ".tmp.%d" % os.getpid()
@@ -6622,6 +7417,22 @@ PY
   say "CLOSED: $did (unit $unit) — status done"
   say "THAT IS THE DELEGATE, AND ONLY THE DELEGATE. This is not a verdict and nothing"
   say "  advanced: the Mission's stage and its verdict are untouched, by design."
+  # S352 — the two-list sign-off, reported.
+  if [ "$hb_complete" = true ]; then
+    say "THE HAND-BACK IS COMPLETE: $hb_ech \`ech-shortfall\` and $hb_bug \`lcars-bug\` entry/entries"
+    say "  in the feedback ledger. Read both lists apart with \`$SELF_CMD report\`."
+  else
+    say "INCOMPLETE HAND-BACK — the delegate is closed, but the sign-off is not:"
+    [ "$hb_ech" -gt 0 ] || say "  MISSING \`ech-shortfall\` — where the ECH fell short for this delegate."
+    [ "$hb_bug" -gt 0 ] || say "  MISSING \`lcars-bug\` — where LCARS fell short for this delegate."
+    say "  found: ech-shortfall=$hb_ech  lcars-bug=$hb_bug."
+    say "  AN EXPLICIT \"NOTHING FOUND\" IS A LEGAL ENTRY; SILENCE IS NOT — silence is"
+    say "    indistinguishable from a delegate that never looked, which is the one thing"
+    say "    these two lists exist to tell apart. Either ask the delegate for them, or"
+    say "    write what YOU observed yourself:"
+    say "  $SELF_CMD ledger feedback '{\"kind\":\"ech-shortfall\",\"delegate\":\"$did\",\"what\":\"…\"}'"
+    say "  $SELF_CMD ledger feedback '{\"kind\":\"lcars-bug\",\"delegate\":\"$did\",\"what\":\"…\"}'"
+  fi
   say "NEXT — your own gate, which no tier skips:"
   say "  $SELF_CMD live-check $unit --type <types>      # your own eyes on the real product"
   say "  $SELF_CMD policy --mission $unit --live-check pass|bugs"
@@ -6697,7 +7508,14 @@ EOF
 
 # delegate_beat_rows → ONE TAB-SEPARATED ROW PER RECORDED DELEGATE:
 #
-#   id  unit  tier  status  mission  elapsed  basis  silent  since  lastLine
+#   id  unit  tier  status  mission  elapsed  basis  silent  since
+#   beatLimit  beatLimitSrc  blocked  lastLine
+#
+#   blocked 1 when the delegate's status is not `done` AND its LATEST beat's
+#           line opens with `BLOCKED` — the delegate escalation channel the
+#           brief now names (S352 fix round 1, D5). It is read from the latest
+#           beat only, so a block the delegate has beat past is cured; the
+#           sequence of beats is still on disk either way.
 #
 #   basis   beat    — `elapsed` is measured from `lastBeatAt`
 #           mint    — it has NEVER beat, so `elapsed` runs from `createdAt`
@@ -6744,12 +7562,45 @@ EOF
 # left every verb reporting all-quiet at exit 0. Nothing has asked to tune it,
 # and a seam nobody needs is a false green nobody is watching for.
 BEAT_SKEW_GRACE=300
+# THE ROW'S SHAPE, DECLARED ONCE (S352 fix round 2, Item 2). S351 emitted ten
+# columns, S350-S352 grew it to thirteen, and `cmd_watch`'s reader was never
+# widened: its last variable silently held three fields joined by tabs. It was
+# harmless only because nothing printed it, and it stayed harmless only because
+# the previous round REMEMBERED to put a new column before the trailing one.
+# That is not a contract, it is a habit, and the next person to add a column has
+# never read this file.
+#
+# SO THE SHAPE IS A DECLARATION, and it is load-bearing in three places:
+#   - the producer below checks the row it actually emits against it and says so
+#     on stderr if they drift (it still emits the row: no rows at all is the
+#     all-quiet false green this entire lane exists to prevent),
+#   - every reader binds these columns PLUS a trailing `*extra` remainder and
+#     calls `delegate_row_extra`, so an unbound tail is LOUD at runtime,
+#   - tests/delegation.test.sh § S352fix2/1 reads this line and every reader out
+#     of this source and goes RED if their arities disagree.
+# ADD A COLUMN HERE AND IN THE `row` LITERAL BELOW, and the test will name every
+# reader you have to widen. Nobody has to remember anything.
+DELEGATE_ROW_COLS='id unit tier status mission elapsed basis silent since limit limitsrc blocked lastLine'
+
+# delegate_row_extra <reader> <remainder> — THE LOUD HALF of that contract. The
+# remainder must come back EMPTY; a non-empty one means the producer has grown a
+# column this reader does not bind, and it is said on stderr rather than left
+# sitting in a variable nobody prints. It changes nothing about what is
+# reported: a reader with an unbound tail still reports everything it did.
+delegate_row_extra() {
+  [ -n "${2:-}" ] || return 0
+  printf '%s: delegate_beat_rows emitted MORE columns than this reader binds — unbound tail: %s. Widen it and DELEGATE_ROW_COLS (tests/delegation.test.sh S352fix2/1 holds this).\n' \
+    "$1" "$2" >&2
+  return 0
+}
 delegate_beat_rows() {
   [ -f "$APJSON" ] || return 0
-  "$PY" - "$APJSON" "$(now)" "$BEAT_LIMIT" "$BEAT_SKEW_GRACE" <<'PY'
+  "$PY" - "$APJSON" "$(now)" "$BEAT_LIMIT" "$BEAT_SKEW_GRACE" "$DELEGATE_ROW_COLS" <<'PY'
 import json, sys
 f, now, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 grace = int(sys.argv[4])
+cols = sys.argv[5].split()
+checked = False
 try:
     d = json.load(open(f))
 except Exception:
@@ -6806,11 +7657,43 @@ for k in sorted((d.get("delegates") or {})):
         silent = 1 if elapsed >= limit else 0
     else:
         silent = 1
-    print("\t".join([k, flat(v.get("unit")) or "-", flat(v.get("tier")) or "-",
-                     status, flat(v.get("mission")) or "-", str(elapsed),
-                     basis, str(silent),
-                     str(since) if since is not None else "-",
-                     str(dl), dlsrc, flat(last)]))
+    # S352 FIX ROUND 1 (D5) — IS IT BLOCKED? A delegate's only channel to the
+    # ECH is its beat, so a beat whose line opens `BLOCKED` is the escalation
+    # and the watchdog has to see it WITHOUT waiting out the silence limit.
+    # It is read from the LATEST beat only: a block the delegate has since beat
+    # past is cured, and the sequence is still on disk either way. A `done`
+    # delegate is never blocked — it finished.
+    blocked = 0
+    if status != "done" and last.strip().upper().startswith("BLOCKED"):
+        blocked = 1
+    # THE ROW CARRIES ITS OWN COLUMN NAMES (S352 fix round 2, Item 2). ONE
+    # literal holds both the name and the value of every column, so those two
+    # cannot drift from each other, and the names are checked once against the
+    # `DELEGATE_ROW_COLS` the shell declared above. A drift is said out loud and
+    # the row is STILL PRINTED — emitting nothing would be the all-quiet false
+    # green, and a bookkeeping mismatch must never cause one.
+    row = [("id",       k),
+           ("unit",     flat(v.get("unit")) or "-"),
+           ("tier",     flat(v.get("tier")) or "-"),
+           ("status",   status),
+           ("mission",  flat(v.get("mission")) or "-"),
+           ("elapsed",  str(elapsed)),
+           ("basis",    basis),
+           ("silent",   str(silent)),
+           ("since",    str(since) if since is not None else "-"),
+           ("limit",    str(dl)),
+           ("limitsrc", dlsrc),
+           ("blocked",  str(blocked)),
+           ("lastLine", flat(last))]
+    if not checked:
+        checked = True
+        names = [n for n, _ in row]
+        if names != cols:
+            sys.stderr.write(
+                "delegate_beat_rows: DELEGATE_ROW_COLS does not match the row this "
+                "producer emits — declared [%s], emitted [%s]. Every reader binds by "
+                "the declaration, so widen both.\n" % (" ".join(cols), " ".join(names)))
+    print("\t".join(val for _, val in row))
 PY
 }
 
@@ -7008,10 +7891,12 @@ PY
   # `stalled` cannot disagree about who is quiet. A third line would have been a
   # second place to look.
   local dl="" stab sid sunit stier sstat smis selapsed sbasis ssilent ssince sline beatsaid
-  local slimit slimitsrc
+  local slimit slimitsrc sblocked sextra
   stab="$(printf '\t')"
-  while IFS="$stab" read -r sid sunit stier sstat smis selapsed sbasis ssilent ssince slimit slimitsrc sline; do
+  while IFS="$stab" read -r sid sunit stier sstat smis selapsed sbasis ssilent ssince slimit slimitsrc sblocked sline sextra; do
     [ -n "${sid:-}" ] || continue
+    # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
+    delegate_row_extra delegation_status_lines "${sextra:-}"
     case "$sbasis" in
       beat) beatsaid="beat=$((selapsed / 60))m ago" ;;
       mint) beatsaid="beat=never, minted $((selapsed / 60))m ago" ;;
@@ -7037,11 +7922,23 @@ PY
       broken|future) : ;;
       *) [ "${ssilent:-0}" = "1" ] && beatsaid="$beatsaid SILENT" ;;
     esac
+    # AND THE BLOCK, ON THE SAME LINE (S352 fix round 1, D5). The brief tells a
+    # delegate a `BLOCKED:` beat is how it reaches the ECH, so the screen the
+    # ECH opens has to show one. It is additive to SILENT: a delegate can be
+    # both, and `stalled` has the words.
+    [ "${sblocked:-0}" = "1" ] && beatsaid="$beatsaid BLOCKED"
     dl="${dl:+$dl  }$sid(unit=$sunit tier=$stier $sstat $beatsaid)"
   done <<STATUS_DELEGATES_EOF
 $(delegate_beat_rows)
 STATUS_DELEGATES_EOF
-  say "  delegates: ${dl:-none}"
+  # S352 FIX ROUND 1 (D10) — THE ONE POINTER AT THE MATRIX. `status` printed
+  # `engine: copilot` and nothing else, so the role→engine table was reachable
+  # only by a captain who already knew the verb. The pointer RIDES THIS LINE
+  # rather than adding a third: `status`'s screen is held byte-identical to the
+  # shipped one but for S350's two lines (the S351/11 regression guard), and a
+  # new standalone line would break that guarantee to say something this line
+  # can carry.
+  say "  delegates: ${dl:-none}    ·    who runs what, by role: \`$SELF_CMD engines\`"
   # THE LIMIT IS STATED BESIDE THE DELEGATES IT WAS APPLIED TO, and only when
   # there are any: an overridden limit must never be invisible, and an extra
   # line on a repo with no delegates would be noise — and would break the
@@ -7064,6 +7961,7 @@ case "$SUB" in
   watch)       cmd_watch "$@" ;;
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
+  engines)     cmd_engines "$@" ;;
   tier)        cmd_tier "$@" ;;
   delegate)    cmd_delegate "$@" ;;
   delegates)   cmd_delegates "$@" ;;

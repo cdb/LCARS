@@ -86,7 +86,9 @@ What it may NOT absorb: a scope change, a product call the captain owns, or a
 conflict with a standing rule. Those are the ECH's to raise, through
 `lcars-ech ask` — and they stay inside the interrupt budget
 (`HOLOGRAM-COMMAND-MODE.md` § 9). **Delegation adds no new interrupt category:
-a delegate's problem is the ECH's problem.**
+a delegate's problem is the ECH's problem.** A delegate gets one of them TO the
+ECH with a `BLOCKED:` beat — § *The exit door, named* — and never by running
+`ask`, which is the ECH's own verb and reserved to it.
 <!-- /tier:T1 -->
 
 <!-- tier:T2 -->
@@ -332,6 +334,256 @@ lcars-ech delegates                                          # the list
 The brief template is `delegate-brief.md`, beside this file —
 `lcars-eeh docs delegate-brief` prints it. It is a reviewable file on disk, not
 a heredoc in a shell script, for the same reason `bug-prd.md` is.
+
+---
+
+## WHO RUNS WHAT — the role → engine matrix
+
+**This is the one statement of it.** Anything else that talks about which engine
+a role runs on is a pointer here or a stale copy.
+
+A run used to record exactly ONE engine, plus a second one for the verifier. So
+there was no way to say *"orchestrator Claude, delegates and workers Copilot,
+reviewer Claude"* — the captain's own arrangement worked **by accident**:
+whichever CLI he launched became the boss, and the one recorded `engine` became
+everything beneath it. That is now a setting.
+
+```bash
+lcars-ech engines                                   # read the table back
+lcars-ech record engines.reviewer.engine claude      # change one row
+lcars-ech record engines.tester.model   <model>      # pin one row's model
+```
+
+**The six roles**, and they are deliberately the roles the rest of LCARS can
+already attribute spend to (`LCARS_WORKER_ROLE`, `stage_key_for_role`,
+`usage_capture`) — a seventh would name something nothing downstream can see:
+
+| role | what it is |
+|---|---|
+| `orchestrator` | the seat driving the factory — the ECH itself |
+| `delegate` | a delegate minted by `lcars-ech delegate` |
+| `worker` | the per-stage worker a mission's own stages spawn |
+| `tester` | a T2 delegate's fresh-context tester |
+| `reviewer` | a review pass over finished work |
+| `numberOne` | the verifier |
+
+**The documented default, and COPILOT IS EMPLOYER-PAID AND EFFECTIVELY FREE
+WHILE CLAUDE IS BILLED.** That is the whole reason the default is shaped this
+way, not a preference:
+
+- `orchestrator` = **the run's own recorded engine** — `engine` in
+  `autopilot.json`, else the repo's `config.json`. **NOTHING DETECTS THE HOST
+  CLI.** This row read `default: the CLI this run is driven by` for one round
+  and that was a label asserting a detection the code does not have: two repos
+  differing only in that field, driven from one session, print different
+  orchestrators. The row now names the file it was read from, because the claim
+  was the defect and the value was fine.
+- every other role = **copilot**.
+- **A Claude role is only ever a recorded choice.**
+
+**A DEFAULT IS PRINTED, NEVER SILENT.** Every row `lcars-ech engines` prints
+says whether its engine came out of the record or out of the paragraph above. A
+default nobody can see is indistinguishable from a setting somebody made, and
+the captain has to be able to tell a deliberate Claude role from a forgotten
+one — the same reason `tier` refuses a missing `--why`.
+
+**`numberOne.engine` STAYS AS THE COMPATIBLE READ.** A repo recorded before this
+existed keeps working, and its value is what `engines.numberOne` resolves to.
+**Nothing migrates it**, because a migration is the only way to lose a captain's
+recorded setting, and losing one is the worst thing this seam could do.
+
+**AND PREFLIGHT NOW HONOURS THAT, WHICH IT DID NOT.** Preflight's Number One
+question used to replace the whole `numberOne` object the moment
+`numberOne.choice` was unset — so on a repo recorded before the choice existed
+it turned a recorded `claude` into the run engine, dropped every sibling key
+beside it, and left `engines` printing "recorded in numberOne.engine" over the
+value it had just destroyed. The invariant, mechanised:
+
+> A recorded `numberOne.engine` — **and any sibling key beside it** — survives
+> preflight. Settling `numberOne.choice` may **add** fields; it may never
+> replace or drop a value the captain put there. And **no row may be labelled
+> "recorded" when what it reports is not what was recorded.**
+
+Settling now writes the fields one at a time, writes the engine **only** when
+there was none of his to keep, and applies HIS engine when he recorded one —
+which is what the already-settled path has always done.
+
+**IT NAMES WHO RUNS WHAT; IT DOES NOT YET GOVERN EVERY LAUNCH, AND IT SAYS SO.**
+Two rows are consumed today: `delegate` and `tester` are **stamped into a minted
+brief** and recorded on the delegate, so they are what a delegate is actually
+told to run on. The other four — `orchestrator`, `worker`, `reviewer`,
+`numberOne` — are **recorded and reported only**; nothing launches from them yet,
+and Number One is still applied by its own LCARS verb from `numberOne.engine`,
+not from `engines.numberOne`. Wiring the rest is a scope call, not a thing to
+imply with a heading: a table that described itself as governing launches it does
+not reach would be the same by-accident shape in a new costume.
+
+**A SUBSTITUTION IS RECORDED, NOT JUST DISPLAYED.** When a row's engine is not
+installed and the run resolves away from it, the minted brief **says which
+engine was recorded, that it is absent, and that the replacement is the
+machine's choice and not the captain's** — and `delegates.<id>.engineRecorded` /
+`.engineSubstituted` carry the same fact on disk. A free row quietly becoming a
+billed one is a bill nobody agreed to, and a screen nobody re-reads is not a
+record.
+
+**IT NEVER NAMES AN ENGINE THIS MACHINE DOES NOT HAVE.** Resolution goes through
+`lcars_available_engines` and `lcars_default_engine` — the same functions every
+other LCARS surface uses — so a row recorded as `claude` on a copilot-only box
+resolves to copilot **and says so on its own line**. A brief that promises an
+engine the machine cannot launch is a hand-off nobody can obey.
+
+**STATED ONCE, AT PREFLIGHT — AND THERE IS NO SEVENTH PROMPT.** Preflight
+**states the recommended table**, records the settlement
+(`engines.settledBy` / `engines.settledAt`), and is **never re-asked**: a table
+already on disk suppresses the item entirely, which is the unattended path.
+It **reports and proceeds** rather than prompting, which is question 5's shape
+and a deliberate deviation from question 6's — measured twice with the repo's own
+rig: a seventh prompt yields `PTYPROMPTS 3 ANSWERED 2`, a prompt the harness
+cannot answer, and the unanswered one then burns its full `ASK_TIMEOUT` every
+run before proceeding on the recommendation it was going to take anyway.
+
+**SO THE OVERRIDE IS A SETTING, NOT A SENTENCE HE RETYPES:**
+
+```bash
+lcars-ech record engines.<role>.engine claude     # the override, durable
+lcars-ech record engines.<role>.model  <model>
+```
+
+That is read by every later run and is named in preflight's own text. **Nothing
+here asks the captain a question**, so his reference must not tell him to answer
+one.
+
+**EVERY BRIEF IS STAMPED.** `lcars-ech delegate` names the delegate's engine and
+model by name, records them at `delegates.<id>.engine` / `.model`, and states
+that **the delegate may not choose another engine** — which engine a role runs
+on is a cost decision the captain made, not one a delegate re-makes mid-unit.
+
+---
+
+## THE FRONT-DOOR CONTRACT a delegate is held to
+
+**This is the one statement of it**, and it is in every minted brief because
+**the doctrine is prose aimed at one reader**: `HOLOGRAM-COMMAND-MODE.md` § 4a
+and the Holodeck sequence are written for the ECH, and **a delegate never reads
+them**. So the rule travels with the hand-off.
+
+**Drive through the HUMAN interfaces. Never hand-step the stage machine.** The
+verbs, named: `lcars file`, `lcars log`, `lcars answer`, `lcars replan`,
+`lcars-ech exec <skill>/<script>`, and **the Holodeck route for any screen
+work** (derive — the wait is asynchronous — then promote inside one of its two
+legal scopes).
+
+**Never build what the factory builds.** **THE QUALITY IS IN THE HARNESS** — the
+grills, the gates, the fresh reviewers, the flip-flop proof — so going around
+the harness throws the quality away and hands back something that merely looks
+finished.
+
+**What a delegate decides alone:** how to do the work, in what order, in which
+files, how to test it, and every stumble it can cure with those verbs.
+
+**What goes UP to the ECH, never to the captain:** a scope change, a product
+call he owns, a conflict with a standing rule. The interrupt budget
+(`HOLOGRAM-COMMAND-MODE.md` § 9) has **four** categories, it is the ECH's to
+spend, and **delegation adds no fifth**.
+
+### THE ABSORPTION ROUTE — by using the factory, never by going round it
+
+This is the clause that makes T1 worth having without making it dangerous. A
+delegate absorbs a stumble **through the factory's own verbs**:
+
+- a **defect in the work** → `lcars log` it against the Mission;
+- a **ticket whose premises the code contradicts** → `lcars replan` that one
+  ticket;
+- a **question only the ECH can settle** → **UP to the ECH, through a
+  `BLOCKED:` beat** (below). A delegate does **not** run `lcars-ech ask`: that
+  verb prints *QUESTION FOR THE CAPTAIN* and fires his notifier, and the
+  interrupt budget is the ECH's to spend. `ask` is in the brief's reserved list
+  beside `land` and `file-bug` for exactly that reason.
+
+**THESE ARE NOT ABSORPTION:** hacking past a red test (deleting it, skipping it,
+loosening its assertion), **building a parallel control beside the real one**, or
+**hand-stepping a stage** to get moving. Each produces the **green-but-wrong
+decoy** — work that reports success and delivers nothing — which is the exact
+class the factory already has machinery against. A delegate that can only see
+one of those three is not stuck on the work; **it is at a question for the ECH.**
+
+### THE EXIT DOOR, NAMED — a `BLOCKED:` beat
+
+**The prohibitions above are only safe if the way out is labelled.** This clause
+also applies pressure in the other direction (*"a delegate that escalates every
+stumble is worth nothing over T0"*), and a channel-less delegate under that
+pressure is precisely the one that improvises. So the brief hands it **one
+runnable command**, and `beat` — the only verb a delegate is given — **is** the
+channel:
+
+```bash
+lcars-ech beat <delegate-id> "BLOCKED: <what it is stuck on, and what it needs>"
+```
+
+A beat whose line **opens with `BLOCKED`** is reported by `lcars-ech stalled`
+**immediately, without waiting out the silence limit**, with the delegate's
+words quoted and its own tally, and it is flagged beside the delegate on
+`lcars-ech status`. It **never reaches the captain** unless the ECH decides it
+should. It is still **not a verdict and it advances nothing** — it is a
+delegate saying it needs an answer, and the ECH's three answers are: answer it,
+replace it, or (only for a call he owns) raise it with the captain. The block
+is read from the **latest** beat only, so the delegate's next beat clears it.
+
+**AND THE DOOR FOR A DEFECT IS `lcars log`, not `file-bug`.** `lcars-ech
+file-bug` is reserved to the ECH and sits behind an evidence-first template
+(`Observed live:` as acceptance criterion #1); `lcars log` asks only for a title
+and `**Type:** bug`. A brief that sent a stuck delegate at `--prd <f>` without
+saying what goes in the file was sending it at a door with no handle, so every
+brief now names the staged `bug-prd.md` to copy.
+
+### EVERY SEAT A DELEGATE OPENS TAKES THE `delegate` ROW
+
+A delegate may divide its unit between sub-delegates, and **there is no
+`subdelegate` row**: every seat it opens — sub-delegate, helper, or just a
+second window — runs on the engine and model stamped in its own brief. The
+prohibition is not "do not pick the engine you are fluent in", which a T2
+delegate could obey while opening three Claude seats; it is **every seat this
+unit pays for**. A seat that genuinely has to be a different engine **may not be
+opened without asking the ECH**.
+
+**AND THE SEAT IT IS ALREADY IN COUNTS.** A brief pasted into a Claude window is
+not a choice the delegate made, and it bills the unit all the same — so "I chose
+nothing" is a true report and a useless one. **If the seat it is in is not the
+stamped engine, it stops** and says so with a `BLOCKED:` beat.
+
+### The T2 tester hand-off
+
+A T2 delegate stands up its own fresh-context tester, hands it **the unit's goal
+and the real product — never its own reasoning**, and gets back **evidence and a
+bug list**. The bug list is **filed through `lcars log`** against the parent
+Mission, one bug per item. **The delegate FILES them; it does not ADJUDICATE
+them** — it does not decide which are real, does not hand-write bugs in place of
+filing them, and **does not fix them inline**. Nothing it files is a verdict and
+the ECH files its own bugs regardless. **`ORCHESTRATION.md` owns the
+tester's own rules** (§ *The loop* step 2, § *The tester opens the real product
+first*) and neither this file nor any brief restates them.
+
+### THE TWO-LIST SIGN-OFF
+
+On exit a delegate makes **two** ledger writes through `lcars-ech ledger
+feedback`:
+
+```bash
+lcars-ech ledger feedback '{"kind":"ech-shortfall","delegate":"<id>","what":"…"}'
+lcars-ech ledger feedback '{"kind":"lcars-bug","delegate":"<id>","what":"…"}'
+```
+
+They are different piles **because they feed different work**: one is a brief to
+write better next time, the other is a bug to fix in the harness. For a year
+they were one pile — `lcars-feedback.jsonl`, "bugs, gaps, friction, wins, YOUR
+OWN MISTAKES" — and that is precisely why it fed nothing.
+
+**An explicit "nothing found" is a legal entry. SILENCE IS NOT** — silence is
+indistinguishable from a delegate that never looked, which is the one thing
+these two lists exist to tell apart. `lcars-ech delegate close <id>` **reports an
+incomplete hand-back** when either kind is missing (it reports; it does not
+refuse — a close carries no judgement and must never strand a finished
+delegate), and `lcars-ech report` prints the ledger as **two separate lists**.
 
 ---
 

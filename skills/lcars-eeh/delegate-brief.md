@@ -43,14 +43,13 @@ four, delegates duplicate each other's work and leave gaps between them.
 | `{{SIGNOFF}}` | who minted it and under which recorded judgement |
 | `{{LAUNCHER}}` | **S351** — `bash <absolute path of the launcher that minted this brief>`, the same path § 3 already gives for every other verb. A brief whose commands are runnable as they stand is the difference between a delegate that beats and one that goes looking |
 | `{{BEAT_LIMIT}}` | **S351** — the silence limit this delegate is held to, in minutes and in seconds, and what happens on expiry. The number comes from `BEAT_LIMIT` (`LCARS_ECH_BEAT_LIMIT`), so a brief minted under an overridden limit states the limit it was actually minted under. That figure is also RECORDED at `delegates.<id>.beatLimit`, so `stalled` can report the limit this delegate was briefed under rather than whichever one happens to be set when the report runs |
-| `{{ENGINE_STAMP}}` | **S352** — the engine the delegate must run on. Rendered EMPTY today. |
-| `{{FRONT_DOOR}}` | **S352** — the front-door clause. Rendered EMPTY today. |
+| `{{ENGINE_STAMP}}` | **S352** — the engine AND model this delegate's role must run on, by name, from the role → engine matrix (`DELEGATION.md` § *Who runs what*), plus the rule that **another engine may not be chosen**. At T2 it also names the tester's row. Recorded at `delegates.<id>.engine` / `.model`, so nothing greps the brief back to learn what it was stamped with. **S352 fix round 1** adds the three things that rule did not cover: **every seat the delegate opens** takes the same row (there is no `subdelegate` row, and a T2 delegate dividing its unit could otherwise open three Claude seats without breaking a sentence); **the seat it is already in** is checked, because a brief pasted into a window it did not choose bills the unit just the same; and a **FREE→BILLED substitution** is stated in the brief and recorded at `delegates.<id>.engineRecorded` / `.engineSubstituted` rather than being visible only on the `engines` screen |
+| `{{FRONT_DOOR}}` | **S352** — the front-door clause: the verbs in scope by name, the Holodeck route for screen work, HCM § 4a's rule stated once, what the delegate decides alone, that a question goes UP to the ECH, **the absorption route and what is NOT absorption**, the T2 tester hand-off, and the two-list sign-off. The ONE statement of those rules is `DELEGATION.md`; this slot carries them to a reader who will never open it. **S352 fix round 1** labels the exit door the prohibitions made necessary: the absorption section used to end on *"raise it"* with no command behind it, and the only escalation verb named was `ask` — which prints *QUESTION FOR THE CAPTAIN*, fires the notifier this same brief forbids four times, and was not even in the reserved list. The channel is now **one runnable command**, a `BLOCKED:` beat, which `stalled` and `status` surface at once; `ask` joins `land` and `file-bug` on the reserved list; and the `lcars log` door names the `bug-prd.md` to copy, because a brief that said `--prd <f>` and nothing more sent a stuck delegate at a door with no handle |
 
-**`{{ENGINE_STAMP}}` and `{{FRONT_DOOR}}` are named and empty on purpose.**
-S352 adds the engine stamp and the front-door clause to this same file. They are
-declared here now so that session edits one template instead of inventing a
-second one — and so nothing invents their content early. A renderer must leave
-an unsupported slot **empty**, never print the token.
+**Those two slots were named and left empty by S350 so that S352 would edit ONE
+template instead of inventing a second one. S352 has filled them.** A renderer
+must still leave an *unsupported* slot **empty**, never print the token: a brief
+with a raw `{{TOKEN}}` in it is a brief a delegate has to guess at.
 
 ## The brief is its own guard (D16)
 

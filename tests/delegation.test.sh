@@ -253,6 +253,12 @@ sys.stdout.write(cur if isinstance(cur, str) else json.dumps(cur))
 PY
 }
 
+# THE ENGINE COLUMN, READ BY COLUMN (S352). `engines` prints a fixed-width
+# table whose 2nd field is the resolved engine and whose 3rd is the model. A
+# bare `grep claude` on a row would ALSO match a copilot row's `claude-*`
+# MODEL, which is the one confusion that would make these assertions lie.
+eng_col() { printf '%s\n' "$1" | awk -v r="$2" -v c="$3" '$1==r {print $c; exit}'; }
+
 printf '\n== DELEGATION.md — the shared doc ==\n'
 
 DOC="$REPO_ROOT/skills/lcars-eeh/DELEGATION.md"
@@ -2379,6 +2385,478 @@ check "it uses the wording that fits — it said nothing at all" \
 check "[control] and a delegate that DID beat still has its words quoted" \
   "printf '%s' \"\$(ech '$R55' stalled 2>&1; ech '$R64' stalled 2>&1)\" | grep -qi 'last words'"
 
+printf '\n== S352/1. preflight ASKS the role→engine matrix ONCE, records it, never re-asks ==\n'
+
+# THE SHAPE IS `pf_q_number_one`'s, DELIBERATELY. Recorded on answer, printed
+# with its recommendation when it asks, and NEVER raised a second time once the
+# record exists — which is also the unattended path (S352/2).
+R352A="$(new_repo)"; ap_init "$R352A"
+pf1="$(ech "$R352A" preflight 2>&1)"
+settled1="$(apj "$R352A" engines.settledAt)"
+check "the matrix question is ASKED (it names itself and its recommendation)" \
+  "printf '%s' \"\$pf1\" | grep -qi 'who runs what' && printf '%s' \"\$pf1\" | grep -q 'RECOMMENDED'"
+# REWORDED IN S352 FIX ROUND 3, BY THE ORCHESTRATOR'S EXPLICIT RULING, on the
+# same precedent as the `engines`-table assertion at S352/3: the DESCRIPTION
+# read "orchestrator = the running CLI", which is the claim fix round 1
+# established this build does not make. The CONDITION only ever greped for
+# `orchestrator`, so nothing was ever satisfied falsely — but the description
+# reads as the requirement, and the next reader would have restored the lie to
+# the product to satisfy it. Intent now matches what ships.
+check "it offers the RECOMMENDED table — every role is named, orchestrator included" \
+  "printf '%s' \"\$pf1\" | grep -qi 'orchestrator'"
+# AND THE RETIRED CLAIM CANNOT COME BACK TO THE CAPTAIN'S SCREEN. Until this
+# round `pf_q_engines` printed "the orchestrator is the CLI this run is driven
+# by" at preflight — the identical defect already cured in the table's own
+# provenance label, surviving in the live text he actually reads. The negative
+# clause is the guard; the two positives stop it being satisfied by deleting
+# the explanation instead of correcting it.
+check "preflight's WHY THIS SHAPE does NOT claim a host-CLI detection" \
+  "! printf '%s' \"\$pf1\" | grep -qi 'orchestrator is the CLI this run is driven by'"
+check "…it names the RECORDED engine as where the orchestrator row comes from" \
+  "printf '%s' \"\$pf1\" | grep -qi 'recorded engine' \
+   && printf '%s' \"\$pf1\" | grep -qi 'autopilot.json'"
+check "…and it says in so many words that nothing detects the host CLI" \
+  "printf '%s' \"\$pf1\" | grep -qi 'detects the CLI'"
+check "and everything below the orchestrator = copilot, because copilot is employer-paid" \
+  "printf '%s' \"\$pf1\" | grep -qi 'copilot'"
+check "the ANSWER IS RECORDED: engines.settledAt is on disk" \
+  "[ -n \"\$(apj '$R352A' engines.settledAt)\" ]"
+check "and WHO settled it is recorded too, not inferred later" \
+  "[ -n \"\$(apj '$R352A' engines.settledBy)\" ]"
+pf2="$(ech "$R352A" preflight 2>&1)"
+check "a SECOND preflight does not re-ask — it says the table is already recorded" \
+  "printf '%s' \"\$pf2\" | grep -qi 'who runs what' && printf '%s' \"\$pf2\" | grep -qi 'already recorded'"
+check "and the second run never re-offers the recommendation block" \
+  "! printf '%s' \"\$pf2\" | grep -qi 'why this shape'"
+check "the recorded settledAt did NOT move on the second run" \
+  "[ -n \"\$settled1\" ] && [ \"\$(apj '$R352A' engines.settledAt)\" = \"\$settled1\" ]"
+check "and the second run says plainly that it is not asking" \
+  "printf '%s' \"\$pf2\" | grep -qi 'not asking'"
+
+printf '\n== S352/2. a PRE-RECORDED matrix suppresses the ask entirely (unattended) ==\n'
+
+R352B="$(new_repo)"; ap_init "$R352B"
+ech "$R352B" record engines.reviewer.engine claude >/dev/null 2>&1
+pfb="$(ech "$R352B" preflight 2>&1)"
+check "the pre-recorded table is APPLIED, not asked about" \
+  "printf '%s' \"\$pfb\" | grep -qi 'not asking'"
+check "nothing offered a recommendation over the captain's own table" \
+  "! printf '%s' \"\$pfb\" | grep -qi 'why this shape'"
+check "and the run never stopped on it (an unattended run must not block here)" \
+  "! printf '%s' \"\$pfb\" | grep -qi 'who runs what.*STOPPING'"
+check "his recorded reviewer SURVIVED the preflight (no migration may lose it)" \
+  "[ \"\$(apj '$R352B' engines.reviewer.engine)\" = claude ]"
+
+printf '\n== S352/3. an unset role resolves to the DOCUMENTED default, and it is PRINTED as one ==\n'
+
+R352C="$(new_repo)"; ap_init "$R352C"
+engc="$(ech "$R352C" engines 2>&1)"
+check "\`engines\` prints a row for every role the worker path can already see" \
+  "( for r in orchestrator delegate worker tester reviewer numberOne; do printf '%s' \"\$engc\" | grep -q \"\$r\" || exit 1; done )"
+check "an unset role is marked as a DEFAULT, never passed off as a recorded value" \
+  "printf '%s' \"\$engc\" | grep -qi 'default'"
+# REWORDED IN S352 FIX ROUND 2, BY THE ORCHESTRATOR'S EXPLICIT RULING — and
+# recorded here as a decision so the next reader does not take it for drift.
+# IT USED TO READ:
+#   check "the orchestrator's default is NAMED as the CLI this run is driven by" \
+#     "printf '%s' \"$engc\" | grep -i 'orchestrator' | grep -qi 'driven by'"
+# That assertion was written EARLIER IN THIS SAME SESSION and it demanded a
+# behaviour this same session has since decided is FALSE: fix round 1 (D2)
+# established that NOTHING in this build detects the host CLI — the value is the
+# run's RECORDED engine, and two repos differing only in that field print
+# different orchestrators from one session. Fix round 1 correctly refused to
+# edit this line and instead wrote an honest label that happens to contain the
+# words "driven by" inside the disclaimer, so it passed on its literal text and
+# was reported up rather than quietly satisfied. Left as it was, it is a
+# landmine: the next reader takes it as a REQUIREMENT that the row claim a
+# detection and restores the lie to satisfy it. So the intent now matches what
+# ships — provenance named, detection disclaimed — and the third clause makes
+# the old false label itself a RED, which is the only version of this rewrite
+# worth having.
+check "the orchestrator's default NAMES the record it was read from and DISCLAIMS a host-CLI detection" \
+  "printf '%s' \"\$engc\" | grep -i '^ *orchestrator' | grep -qi 'autopilot.json engine' \
+   && printf '%s' \"\$engc\" | grep -i '^ *orchestrator' | grep -qi 'not a detection' \
+   && ! printf '%s' \"\$engc\" | grep -qi 'default: *the CLI this run is driven by'"
+check "the orchestrator resolves to the engine this run is recorded with" \
+  "[ \"\$(eng_col \"\$engc\" orchestrator 2)\" = copilot ]"
+check "every OTHER role defaults to copilot, which is employer-paid" \
+  "[ \"\$(eng_col \"\$engc\" worker 2)\" = copilot ] && [ \"\$(eng_col \"\$engc\" reviewer 2)\" = copilot ]"
+check "every role carries a MODEL by name as well as an engine" \
+  "[ \"\$(eng_col \"\$engc\" worker 3)\" = claude-opus-5.5 ]"
+check "nothing is recorded by merely READING the table (engines is read-only)" \
+  "[ -z \"\$(apj '$R352C' engines.settledAt)\" ]"
+
+printf '\n== S352/4. a LEGACY repo carrying ONLY numberOne.engine reads back correctly ==\n'
+
+# THE WORST DEFECT THIS SESSION COULD SHIP is losing a captain's recorded
+# setting. `numberOne.engine` is the COMPATIBLE READ and stays one: a repo
+# recorded before the matrix existed resolves `engines.numberOne` from it.
+R352D="$(new_repo)"; ap_init "$R352D"
+python3 - "$R352D/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["numberOne"] = {"choice": "on", "enabled": True, "engine": "claude",
+                  "settledAt": 1, "appliedAt": 2}
+json.dump(d, open(f, "w"), indent=2)
+PY
+engd="$(ech "$R352D" engines 2>&1)"
+check "engines.numberOne resolves to the LEGACY numberOne.engine value" \
+  "[ \"\$(eng_col \"\$engd\" numberOne 2)\" = claude ]"
+check "and it is reported as a RECORDED value, not as a default" \
+  "printf '%s' \"\$engd\" | grep -i 'numberOne' | grep -qi 'recorded'"
+check "it NAMES numberOne.engine as where that value came from" \
+  "printf '%s' \"\$engd\" | grep -qi 'numberOne.engine'"
+check "the legacy key is still on disk — nothing migrated it away" \
+  "[ \"\$(apj '$R352D' numberOne.engine)\" = claude ]"
+check "no engines.numberOne record was invented over it" \
+  "[ -z \"\$(apj '$R352D' engines.numberOne.engine)\" ]"
+# And preflight's own Number One settle path still works on that repo.
+pfd="$(ech "$R352D" preflight 2>&1)"
+check "preflight still applies the recorded Number One choice unchanged" \
+  "printf '%s' \"\$pfd\" | grep -q '6. Number One: already recorded on (engine claude)'"
+
+printf '\n== S352/5. the matrix NEVER resolves to an engine this machine does not have ==\n'
+
+R352E="$(new_repo)"; ap_init "$R352E"
+ech "$R352E" record engines.reviewer.engine claude >/dev/null 2>&1
+# LCARS_CLAUDE_BIN is the documented env seam for "what this machine has"
+# (`lcars_engine_bin`), so the arm pins the machine without touching PATH.
+enge="$(LCARS_CLAUDE_BIN=claude-not-installed-here ech "$R352E" engines 2>&1)"
+check "the reviewer row does NOT present claude as the engine that will run" \
+  "[ \"\$(eng_col \"\$enge\" reviewer 2)\" != claude ]"
+check "it SAYS the recorded engine is not installed here rather than hiding it" \
+  "printf '%s' \"\$enge\" | grep -qi 'not installed'"
+check "and it names what it resolves to instead" \
+  "[ \"\$(eng_col \"\$enge\" reviewer 2)\" = copilot ] && printf '%s' \"\$enge\" | grep -qi 'resolves to copilot'"
+check "[control] with claude installed the same record resolves TO claude" \
+  "[ \"\$(eng_col \"\$(ech '$R352E' engines 2>&1)\" reviewer 2)\" = claude ]"
+
+printf '\n== S352/6. `record engines.<role>.engine` takes, and the table is MIXED ==\n'
+
+R352F="$(new_repo)"; ap_init "$R352F"
+recf="$(ech "$R352F" record engines.reviewer.engine claude 2>&1)"; rcf=$?
+check "\`record engines.reviewer.engine claude\` is accepted" "[ $rcf -eq 0 ]"
+check "it went through the EXISTING writer (no new one) and is on disk" \
+  "[ \"\$(apj '$R352F' engines.reviewer.engine)\" = claude ]"
+ech "$R352F" record engines.orchestrator.engine claude >/dev/null 2>&1
+ech "$R352F" record engines.worker.engine copilot >/dev/null 2>&1
+engf="$(ech "$R352F" engines 2>&1)"
+check "the MIXED table reads back: orchestrator claude" \
+  "[ \"\$(eng_col \"\$engf\" orchestrator 2)\" = claude ]"
+check "…worker copilot" \
+  "[ \"\$(eng_col \"\$engf\" worker 2)\" = copilot ]"
+check "…reviewer claude" \
+  "[ \"\$(eng_col \"\$engf\" reviewer 2)\" = claude ]"
+check "all three are reported as RECORDED values" \
+  "[ \"\$(printf '%s' \"\$engf\" | grep -ci 'recorded')\" -ge 3 ]"
+check "an engine that is not one of LCARS's own is REFUSED, not written" \
+  "! ech '$R352F' record engines.tester.engine bananas >/dev/null 2>&1 && [ -z \"\$(apj '$R352F' engines.tester.engine)\" ]"
+check "a role that is not one of the six is REFUSED too" \
+  "! ech '$R352F' record engines.captain.engine copilot >/dev/null 2>&1"
+check "and a MODEL records with no new writer either" \
+  "ech '$R352F' record engines.tester.model some-model >/dev/null 2>&1 && [ \"\$(apj '$R352F' engines.tester.model)\" = some-model ]"
+
+printf '\n== S352/7. a minted brief STAMPS its role'\''s engine AND model by name ==\n'
+
+R352G="$(new_repo)"; ap_init "$R352G"; new_mission "$R352G" u-352g implement
+ech "$R352G" record engines.delegate.engine copilot >/dev/null 2>&1
+ech "$R352G" record engines.delegate.model my-pinned-model >/dev/null 2>&1
+ech "$R352G" tier u-352g --tier T1 --why "one delegate owns it" >/dev/null 2>&1
+ech "$R352G" delegate u-352g >/dev/null 2>&1
+BG="$R352G/.git/lcars/delegates/d1/BRIEF.md"
+check "the brief exists" "[ -f '$BG' ]"
+check "it NAMES the engine the delegate must run on" \
+  "grep -qi 'copilot' '$BG'"
+check "it NAMES the model by name, not 'the default'" \
+  "grep -q 'my-pinned-model' '$BG'"
+check "it says the delegate MAY NOT choose another engine" \
+  "grep -qi 'may not' '$BG' && grep -qi 'another engine' '$BG'"
+check "the ENGINE_STAMP slot is FILLED, not rendered empty any more" \
+  "grep -qi 'the engine you run on' '$BG'"
+check "no raw slot token survived the render" \
+  "! grep -q 'ENGINE_STAMP' '$BG' && ! grep -q 'FRONT_DOOR' '$BG' && ! grep -q '{{' '$BG'"
+# THE PRODUCER RECORDS THE FACT (rule 6): nothing downstream greps the brief to
+# learn which engine it was stamped with.
+check "the minter RECORDED the engine it stamped, so no reader has to grep it back" \
+  "[ \"\$(apj '$R352G' delegates.d1.engine)\" = copilot ]"
+check "…and the model too" \
+  "[ \"\$(apj '$R352G' delegates.d1.model)\" = my-pinned-model ]"
+# `>/dev/null` NOT `-q` ON THE LAST LINE, for the reason recorded in full at
+# S352/9b below. This one is MEASURED SAFE as it stands today (60/60, only
+# ~2.5 KB of the range left after its match) and it is NOT what redded the
+# suite — it is hardened anyway because it is the same producer class as the
+# one that did, its safety is an accident of how short the brief is right now,
+# and a brief that grows past about 4 KB of tail turns it flaky with no code
+# change at all. The assertion itself is untouched: same pattern, same meaning.
+check "a T2 brief ALSO stamps the engine its own fresh tester must run on" \
+  "R=\$(new_repo); ap_init \"\$R\"; new_mission \"\$R\" u2 implement; \
+   ech \"\$R\" record engines.tester.engine claude >/dev/null 2>&1; \
+   ech \"\$R\" tier u2 --tier T2 --why 'needs fresh eyes' >/dev/null 2>&1; \
+   ech \"\$R\" delegate u2 >/dev/null 2>&1; \
+   grep -qi 'tester' \"\$R/.git/lcars/delegates/d1/BRIEF.md\" && \
+   awk '/[Tt]he engine you run on/,0' \"\$R/.git/lcars/delegates/d1/BRIEF.md\" \
+     | grep -i 'claude' >/dev/null"
+
+printf '\n== S352/8. the FRONT-DOOR CLAUSE is in the brief, naming the REAL verbs ==\n'
+
+check "it names \`lcars file\`" "grep -q 'lcars file' '$BG'"
+check "it names \`lcars log\`" "grep -q 'lcars log' '$BG'"
+check "it names \`lcars answer\`" "grep -q 'lcars answer' '$BG'"
+check "it names \`exec <skill>/<script>\` as the route to a sibling skill" \
+  "grep -q 'exec ' '$BG'"
+check "it names the HOLODECK route for any screen work" \
+  "grep -qi 'holodeck' '$BG'"
+check "it states HCM 4a's rule: drive through the HUMAN interfaces" \
+  "grep -qi 'human interfaces' '$BG'"
+check "…never hand-step the stage machine" \
+  "grep -qi 'hand-step' '$BG'"
+check "…and never build what the factory builds" \
+  "grep -qi 'never build what the factory builds' '$BG'"
+check "it says WHY: the quality is in the harness" \
+  "grep -qi 'quality is in the harness' '$BG'"
+check "it points at HCM 4a by name so the rule has one home" \
+  "grep -q '4a' '$BG'"
+
+printf '\n== S352/9. a question goes UP to the ECH, and no brief invents a FIFTH interrupt ==\n'
+
+check "the brief says a question goes UP to the ECH" \
+  "grep -qi 'up to the ECH' '$BG'"
+check "it says the captain is NOT the delegate's escalation route" \
+  "grep -qi 'not the captain' '$BG' || grep -qi 'never the captain' '$BG'"
+check "it names HCM 9's budget as the ECH's, with FOUR categories unchanged" \
+  "grep -qi 'four' '$BG' && grep -q '§ 9' '$BG'"
+check "no brief invents a fifth captain interrupt category" \
+  "grep -qi 'no fifth' '$BG'"
+check "…at T2 either" \
+  "R=\$(new_repo); ap_init \"\$R\"; new_mission \"\$R\" u9 implement; \
+   ech \"\$R\" tier u9 --tier T2 --why 'needs fresh eyes' >/dev/null 2>&1; \
+   ech \"\$R\" delegate u9 >/dev/null 2>&1; \
+   grep -qi 'no fifth' \"\$R/.git/lcars/delegates/d1/BRIEF.md\""
+
+printf '\n== S352/9b. the ABSORPTION ROUTE is named BY VERB, and so is what is NOT absorption ==\n'
+
+# THE FORM OF THE NEXT ASSERTION IS LOAD-BEARING — `>/dev/null`, NOT `-q`.
+# REWORDED IN S352 FIX ROUND 3 BY THE ORCHESTRATOR'S EXPLICIT RULING, and
+# recorded here because `-q` is the house style everywhere else in this file and
+# a tidy-up would put it back.
+# IT USED TO READ:
+#   "awk '/absorb/,0' '$BG' | grep -q 'lcars log'"
+# and it was the suite's ONLY flaky assertion: under `set -uo pipefail`,
+# `grep -q` exits the instant it matches while `awk` still has ~11.6 KB of the
+# range left to write. `awk` then takes SIGPIPE, the PIPELINE reports 141, and
+# the check fails EVEN THOUGH THE MATCH WAS FOUND. Measured, 60 runs each, with
+# the real geometry (see § the measurement, below): the shipped form PASS 49 /
+# FAIL 11; `| grep … >/dev/null` PASS 60 / FAIL 0; `grep -q … <<<"$(awk …)"`
+# PASS 60 / FAIL 0; and `printf '%s' "$(awk …)" | grep -q` PASS 1 / FAIL 59 —
+# measurably WORSE, so it is not the fix even though it looks like one.
+#
+# THE MEASUREMENT, AND WHY ONLY THIS ONE LINE CHANGED. The suite has 329
+# `| grep -q` pipelines under `pipefail`. Every one of them was instrumented and
+# its bytes-after-the-match recorded, then each distinct producer form was run 60
+# times at its real geometry:
+#   * `awk '/…/,0' … | grep -q`, 11.6 KB after the match (this line) 49/11 FLAKY
+#   * `awk '/…/,0' … | grep -qi`, 2.5 KB after the match (line ~2571)  60/0 safe
+#   * `printf '%s' "$var" | grep -q`, 30.5 KB after the match — the
+#     suite's LARGEST, at "it prints the T1 contract fence"            60/0 safe
+#   * `printf '%s' "$var" | grep -i X | grep -q Y`, 5.7 KB after       60/0 safe
+# SIZE ALONE IS NOT THE PREDICTOR — the producer's WRITE PATTERN is. bash's
+# `printf` builtin hands the whole variable over in one write and exits before
+# `grep -q` can close the pipe, which is why 30.5 KB of tail is still safe;
+# `awk` dribbles its output through a 4 KB stdio buffer and loses the race once
+# more than a buffer or so remains. The same chained form pushed synthetically
+# to 30 KB of tail did fail 1 in 60 — so the risk is real but nothing in this
+# file is anywhere near it. THAT is why this is a one-line fix and not a
+# 329-assertion refactor: exactly one pipeline in the suite is at risk, and the
+# guard below keeps it that way.
+check "a defect in the work → \`lcars log\`" \
+  "awk '/absorb/,0' '$BG' | grep 'lcars log' >/dev/null"
+# THE CLASS GUARD, so the flake cannot come back by a different line. A single
+# green proves nothing about a race — this asserts the SHAPE is gone, which is
+# the only thing a one-shot test can prove about an 18%-of-the-time failure.
+# `sed` strips comments FIRST, because the paragraph above deliberately quotes
+# the retired form and a guard that reds on its own documentation is useless.
+S352_SIGPIPE_SHAPE="awk .[/][^/]*[/],0.[^|]*[|] *grep +-[a-zA-Z]*q"
+check "no \`awk\` range-to-EOF in this suite's CODE is piped into a \`grep -q\` (the SIGPIPE flake)" \
+  "! sed '/^[[:space:]]*#/d' '$DIR/delegation.test.sh' \
+     | grep -E \"\$S352_SIGPIPE_SHAPE\" >/dev/null"
+check "a contradicted premise → \`lcars replan\`" \
+  "grep -q 'lcars replan' '$BG'"
+check "a question only the ECH can settle → up, via the ECH's own \`ask\`" \
+  "grep -q 'ask' '$BG'"
+check "HACKING PAST A RED TEST is named as NOT absorption" \
+  "grep -qi 'hacking past a red test' '$BG' || grep -qi 'past a red test' '$BG'"
+check "A PARALLEL CONTROL beside the real one is named as NOT absorption" \
+  "grep -qi 'parallel control' '$BG'"
+check "HAND-STEPPING A STAGE to get moving is named as NOT absorption" \
+  "grep -qi 'hand-step' '$BG' && grep -qi 'not absorption' '$BG'"
+check "it names the class by its real name — the green-but-wrong decoy" \
+  "grep -qi 'green-but-wrong' '$BG'"
+
+printf '\n== S352/9c. T2 requires a fresh-context tester and POINTS AT ORCHESTRATION.md; T1 does not ==\n'
+
+R352H="$(new_repo)"; ap_init "$R352H"; new_mission "$R352H" u-352h implement
+ech "$R352H" tier u-352h --tier T2 --why "it needs an independent pass" >/dev/null 2>&1
+ech "$R352H" delegate u-352h >/dev/null 2>&1
+BH="$R352H/.git/lcars/delegates/d1/BRIEF.md"
+check "the T2 brief REQUIRES a fresh-context tester" \
+  "grep -qi 'fresh-context' '$BH' || grep -qi 'fresh context' '$BH'"
+check "it says WHAT the delegate hands it: the goal and the REAL PRODUCT" \
+  "grep -qi 'the real product' '$BH'"
+check "…and NEVER its own reasoning" \
+  "grep -qi 'never' '$BH' && grep -qi 'your reasoning' '$BH'"
+check "it says what comes BACK: evidence and a bug list" \
+  "grep -qi 'evidence' '$BH' && grep -qi 'bug list' '$BH'"
+check "the bug list is FILED through \`lcars log\` against the parent mission" \
+  "grep -qi 'lcars log' '$BH'"
+check "the delegate does NOT hand-write bugs and does NOT fix them inline" \
+  "grep -qi 'do not fix them inline' '$BH' || grep -qi 'not fix them inline' '$BH'"
+check "it POINTS AT ORCHESTRATION.md for the tester's own rules" \
+  "grep -q 'ORCHESTRATION.md' '$BH'"
+check "it does NOT restate ORCHESTRATION.md's tester rules" \
+  "! grep -qi 'must not edit source or tests' '$BH'"
+check "the T1 brief does NOT require a tester" \
+  "! grep -qi 'you stand up the fresh-context' '$BG'"
+check "and the T1 brief does not restate the tester rules either" \
+  "! grep -qi 'must not edit source or tests' '$BG'"
+
+printf '\n== S352/9d. EVERY brief: the ECH verifies ITSELF and the hand-back is not the verdict ==\n'
+
+for b in "$BG" "$BH"; do
+  check "[$b] the ECH verifies the work ITSELF" \
+    "grep -qi 'the ECH will verify the work itself' '$b'"
+  check "[$b] it files its OWN bugs" \
+    "grep -q 'file-bug' '$b'"
+  check "[$b] the hand-back is a REPORT, never a verdict" \
+    "grep -qi 'report, never a verdict' '$b'"
+  check "[$b] it says do not mark anything verified, approved or landed" \
+    "grep -qi 'verified' '$b' && grep -qi 'approved' '$b' && grep -qi 'landed' '$b'"
+  check "[$b] it carries the 0-of-31 evidence that makes the rule non-negotiable" \
+    "grep -q '31' '$b'"
+  check "[$b] NO brief implies the ECH may SKIP its own live check" \
+    "! grep -qiE 'skip (its|the) (own )?live check|live check (may|can) be skipped' '$b'"
+done
+check "the T2 brief says its tester is ADDITIVE, never a replacement for the gate" \
+  "grep -qi 'additive' '$BH' && grep -qi 'does not replace' '$BH'"
+check "the T2 brief never says its tester's look is enough" \
+  "! grep -qiE 'already looked, so|no need for (its|the) own' '$BH'"
+
+printf '\n== S352/10. `delegate close` REPORTS an incomplete hand-back when a ledger kind is missing ==\n'
+
+# TWO LEDGER WRITES, THROUGH THE EXISTING `ledger feedback`. An explicit
+# "nothing found" is a LEGAL entry; SILENCE IS NOT.
+R352I="$(new_repo)"; ap_init "$R352I"; new_mission "$R352I" u-352i implement
+ech "$R352I" tier u-352i --tier T1 --why "one owner" >/dev/null 2>&1
+ech "$R352I" delegate u-352i >/dev/null 2>&1
+closei="$(ech "$R352I" delegate close d1 2>&1)"
+check "with NEITHER kind written, close REPORTS an incomplete hand-back" \
+  "printf '%s' \"\$closei\" | grep -qi 'incomplete hand-back'"
+check "it names BOTH missing kinds by their real kind strings" \
+  "printf '%s' \"\$closei\" | grep -q 'ech-shortfall' && printf '%s' \"\$closei\" | grep -q 'lcars-bug'"
+check "it still CLOSES the delegate (a report, not a refusal)" \
+  "[ \"\$(apj '$R352I' delegates.d1.status)\" = done ]"
+check "the producer RECORDED the hand-back's completeness, not left it to be grepped" \
+  "[ \"\$(apj '$R352I' delegates.d1.handback.complete)\" = false ]"
+
+R352J="$(new_repo)"; ap_init "$R352J"; new_mission "$R352J" u-352j implement
+ech "$R352J" tier u-352j --tier T1 --why "one owner" >/dev/null 2>&1
+ech "$R352J" delegate u-352j >/dev/null 2>&1
+ech "$R352J" ledger feedback '{"kind":"ech-shortfall","delegate":"d1","what":"the brief did not say which branch"}' >/dev/null 2>&1
+closej1="$(ech "$R352J" delegate close d1 2>&1)"
+check "with ONLY ech-shortfall, close still reports an incomplete hand-back" \
+  "printf '%s' \"\$closej1\" | grep -qi 'incomplete hand-back'"
+check "and it names the ONE kind that is missing" \
+  "printf '%s' \"\$closej1\" | grep -q 'lcars-bug'"
+check "a SECOND close is still refused (S350's rule is untouched)" \
+  "! ech '$R352J' delegate close d1 >/dev/null 2>&1"
+
+R352K="$(new_repo)"; ap_init "$R352K"; new_mission "$R352K" u-352k implement
+ech "$R352K" tier u-352k --tier T1 --why "one owner" >/dev/null 2>&1
+ech "$R352K" delegate u-352k >/dev/null 2>&1
+ech "$R352K" ledger feedback '{"kind":"ech-shortfall","delegate":"d1","what":"nothing found"}' >/dev/null 2>&1
+ech "$R352K" ledger feedback '{"kind":"lcars-bug","delegate":"d1","what":"nothing found"}' >/dev/null 2>&1
+closek="$(ech "$R352K" delegate close d1 2>&1)"
+check "with BOTH kinds the close records done and says the hand-back is complete" \
+  "[ \"\$(apj '$R352K' delegates.d1.status)\" = done ] && printf '%s' \"\$closek\" | grep -qi 'hand-back is complete'"
+check "it does NOT report an incomplete hand-back" \
+  "! printf '%s' \"\$closek\" | grep -qi 'incomplete hand-back'"
+check "the recorded completeness agrees with what it printed" \
+  "[ \"\$(apj '$R352K' delegates.d1.handback.complete)\" = true ]"
+check "an explicit \"nothing found\" is a LEGAL entry — it counted" \
+  "[ \"\$(apj '$R352K' delegates.d1.handback.echShortfall)\" = 1 ]"
+check "close STILL carries no verdict and advances nothing (S350's hardest rule)" \
+  "printf '%s' \"\$closek\" | grep -qi 'not a verdict' && ! ech '$R352K' delegate close d1 --verdict pass >/dev/null 2>&1"
+check "the BRIEF told the delegate to make both writes, by their kind strings" \
+  "grep -q 'ech-shortfall' '$R352K/.git/lcars/delegates/d1/BRIEF.md' && grep -q 'lcars-bug' '$R352K/.git/lcars/delegates/d1/BRIEF.md'"
+check "…and that SILENCE is not an answer" \
+  "grep -qi 'silence is not' '$R352K/.git/lcars/delegates/d1/BRIEF.md'"
+
+printf '\n== S352/11. `report` prints TWO SEPARATE LISTS from the one ledger file ==\n'
+
+R352L="$(new_repo)"; ap_init "$R352L"; new_mission "$R352L" u-352l implement
+ech "$R352L" ledger feedback '{"kind":"ech-shortfall","what":"the ECH re-read the plan three times"}' >/dev/null 2>&1
+ech "$R352L" ledger feedback '{"kind":"lcars-bug","what":"lcars status printed an empty Research column"}' >/dev/null 2>&1
+ech "$R352L" ledger feedback '{"kind":"win","what":"neither list is a dumping ground"}' >/dev/null 2>&1
+rep="$R352L/rep.html"
+ech "$R352L" report --out "$rep" >/dev/null 2>&1
+check "the report renders" "[ -f '$rep' ]"
+check "there is a list for where the ECH fell short" \
+  "grep -qi 'where the ECH fell short' '$rep'"
+check "and a SEPARATE list for where LCARS fell short" \
+  "grep -qi 'where LCARS fell short' '$rep'"
+check "they are two different lists, with their own ids" \
+  "grep -q 'id=\"ech-shortfalls\"' '$rep' && grep -q 'id=\"lcars-bugs\"' '$rep'"
+check "the ech-shortfall entry is in the ECH list" \
+  "awk '/id=\"ech-shortfalls\"/,/<\\/ul>/' '$rep' | grep -q 'read the plan three times'"
+check "the lcars-bug entry is in the LCARS list, and NOT in the ECH's" \
+  "awk '/id=\"lcars-bugs\"/,/<\\/ul>/' '$rep' | grep -q 'empty Research column' && \
+   ! awk '/id=\"ech-shortfalls\"/,/<\\/ul>/' '$rep' | grep -q 'empty Research column'"
+check "an entry of neither kind is in NEITHER list — these are not a dumping ground" \
+  "! awk '/id=\"ech-shortfalls\"/,/<\\/ul>/' '$rep' | grep -q 'dumping ground' && \
+   ! awk '/id=\"lcars-bugs\"/,/<\\/ul>/' '$rep' | grep -q 'dumping ground'"
+check "an EMPTY list says so rather than vanishing" \
+  "R=\$(new_repo); ap_init \"\$R\"; ech \"\$R\" report --out \"\$R/r.html\" >/dev/null 2>&1; \
+   awk '/id=\"ech-shortfalls\"/,/<\\/ul>/' \"\$R/r.html\" | grep -qi 'none'"
+check "the page still comes from no clock — re-rendering is identical" \
+  "ech '$R352L' report --out '$R352L/rep2.html' >/dev/null 2>&1; \
+   diff -q '$rep' '$R352L/rep2.html' >/dev/null"
+
+printf '\n== S352/12. DELEGATION.md is the ONE statement of the matrix and the front door ==\n'
+
+check "DELEGATION.md states the role→engine matrix" \
+  "grep -qi 'role.engine matrix' '$DOC' || grep -qi 'who runs what' '$DOC'"
+check "it names all six roles" \
+  "( for r in orchestrator delegate worker tester reviewer numberOne; do grep -q \"\$r\" '$DOC' || exit 1; done )"
+check "it states the DOCUMENTED default and why copilot" \
+  "grep -qi 'employer-paid' '$DOC'"
+check "it says numberOne.engine stays as the COMPATIBLE read" \
+  "grep -qi 'compatible read' '$DOC'"
+check "it says a default is PRINTED, never silent" \
+  "grep -qi 'never silent' '$DOC'"
+check "it states the FRONT-DOOR contract a delegate is held to" \
+  "grep -qi 'front.door' '$DOC' && grep -qi 'quality is in the harness' '$DOC'"
+check "it states the ABSORPTION ROUTE and what is NOT absorption" \
+  "grep -qi 'not absorption' '$DOC'"
+check "it states the TWO-LIST sign-off by its kind strings" \
+  "grep -q 'ech-shortfall' '$DOC' && grep -q 'lcars-bug' '$DOC'"
+# ONE STATEMENT, POINTERS ELSEWHERE. A second copy of a rule is a rule that
+# drifts — the doctrine S350 and S351 already assert.
+check "HOLOGRAM-COMMAND-MODE.md POINTS at DELEGATION.md for the matrix rather than restating it" \
+  "! grep -qi 'engines.orchestrator' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md' || grep -q 'DELEGATION.md' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "ORCHESTRATION.md keeps no second copy of the matrix" \
+  "! grep -qi 'employer-paid' '$REPO_ROOT/skills/lcars-eeh/ORCHESTRATION.md'"
+check "the driver's own usage documents the \`engines\` verb" \
+  "u=\$(ech '$R352C' --help 2>&1 || true); printf '%s' \"\$u\" | grep -q 'engines'"
+# THE THIRD HOME OF THE RETIRED CLAIM, found in S352 fix round 3 and not in the
+# two the round was scoped to. `usage()` described the orchestrator row as
+# "the CLI this run is driven by" — the same lie as the table label and the
+# preflight paragraph, in the text printed by `lcars-ech --help`. Guarded here
+# so the sweep is complete rather than two-thirds done.
+check "…and its \`engines\` entry does NOT claim a host-CLI detection either" \
+  "u=\$(ech '$R352C' --help 2>&1 || true); \
+   ! printf '%s' \"\$u\" | grep -qi 'orchestrator = the CLI this run is driven' \
+   && printf '%s' \"\$u\" | grep -qi 'never a detection'"
+
 printf '\n== 12. REGRESSION: an untiered mission reaches `next` exactly as before ==\n'
 
 # THE BASELINE IS THE REAL PRE-CHANGE DRIVER, run on the SAME fixture.
@@ -2429,6 +2907,549 @@ for fn in cmd_next build_plan; do
   check "$fn() source is byte-identical to main (UNTOUCHED)" \
     "[ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ]"
 done
+
+# ==========================================================================
+# S352 FIX ROUND 1 — the twelve findings a fresh tester brought back.
+#
+# Three of them are failures of TRUST rather than of logic, and those three are
+# what this block is mostly about:
+#
+#   D1  preflight DESTROYED a recorded `numberOne.engine` and every sibling key
+#       beside it, while `engines` went on labelling the row "recorded" — so the
+#       screen reported the destroyed value back to the captain as his own
+#       setting. `DELEGATION.md` promises the exact opposite in his own
+#       reference ("Nothing migrates it").
+#   D2  the orchestrator row claimed `default: the CLI this run is driven by`.
+#       There is no host-CLI detection anywhere: the value is the RECORDED run
+#       engine, and two repos differing only in that field, driven from one
+#       session, printed different engines.
+#   D4  §2 of a T2 brief said the delegate does not file the tester's bug list
+#       and §3 said it does.
+#
+# The rest are the exit door nobody labelled (D5), the doc describing a prompt
+# that does not ship (D9), a FREE→BILLED substitution said only on a screen
+# (D8), sub-seats with no stamped engine (D6), a seat a delegate is ALREADY in
+# (D7) and the one pointer `status` was missing (D10).
+# ==========================================================================
+
+# n1norm <repo> — the numberOne object as sorted `key=value` lines, with every
+# epoch normalised. THE COMPARISON HAS TO SURVIVE A CLOCK TICK but must not
+# survive a lost key or a changed value, which is exactly what D1 was.
+n1norm() {
+  python3 - "$1/.git/lcars/autopilot.json" <<'PY'
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+n = d.get("numberOne")
+if not isinstance(n, dict):
+    print("NOT-A-DICT:%r" % (n,)); sys.exit(0)
+for k in sorted(n):
+    v = n[k]
+    if k in ("settledAt", "appliedAt") and isinstance(v, int):
+        v = "@TS@"
+    print("%s=%s" % (k, json.dumps(v)))
+PY
+}
+
+# THE SHIPPED DRIVER, for the controls below. `$BASE/skills/lcars-eeh/ech.sh` is
+# main's, written above; a missing one is reported rather than silently skipped.
+MAINECH="$BASE/skills/lcars-eeh/ech.sh"
+FIXBASE_OK=0
+[ -s "$MAINECH" ] && FIXBASE_OK=1
+
+printf '\n== S352fix/1. [D1] a recorded `numberOne.engine` SURVIVES preflight, and so does every sibling beside it ==\n'
+
+# THE FIXTURE IS THE ONE THE TESTER REPRODUCED: an engine recorded with NO
+# `choice`, which is the only shape that reached the wholesale
+# `ap_set numberOne "$decision"`.
+n1_legacy_engine() {  # <repo>
+  python3 - "$1/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["numberOne"] = {"engine": "claude", "note": "captain set this deliberately"}
+json.dump(d, open(f, "w"), indent=2)
+PY
+}
+
+RFX1="$(new_repo)"; ap_init "$RFX1"; n1_legacy_engine "$RFX1"
+fx1before="$(ech "$RFX1" engines 2>&1)"
+check "[precondition] the row reads his recorded claude through the compatible read" \
+  "[ \"\$(eng_col \"\$fx1before\" numberOne 2)\" = claude ] && printf '%s' \"\$fx1before\" | grep -i numberOne | grep -qi 'recorded in numberOne.engine'"
+xo_claude_before="$(grep -c -- 'xo.sh on --engine claude' "$STUB_LOG" 2>/dev/null | tr -d ' ')"
+fx1pf="$(ech "$RFX1" preflight 2>&1)"
+check "his recorded numberOne.engine SURVIVED preflight — nothing migrated it" \
+  "[ \"\$(apj '$RFX1' numberOne.engine)\" = claude ]"
+check "the SIBLING key he put beside it survived too" \
+  "[ \"\$(apj '$RFX1' numberOne.note)\" = 'captain set this deliberately' ]"
+check "settling may ADD fields: choice is now recorded" \
+  "[ \"\$(apj '$RFX1' numberOne.choice)\" = on ]"
+check "…with enabled and a settledAt beside it" \
+  "[ \"\$(apj '$RFX1' numberOne.enabled)\" = true ] && printf '%s' \"\$(apj '$RFX1' numberOne.settledAt)\" | grep -qE '^[0-9]{10}$'"
+check "…and it was APPLIED, so appliedAt is recorded" \
+  "printf '%s' \"\$(apj '$RFX1' numberOne.appliedAt)\" | grep -qE '^[0-9]{10}$'"
+fx1after="$(ech "$RFX1" engines 2>&1)"
+check "the row STILL resolves to his claude after preflight" \
+  "[ \"\$(eng_col \"\$fx1after\" numberOne 2)\" = claude ]"
+# NO ROW MAY BE LABELLED "recorded" WHILE REPORTING SOMETHING ELSE. That is the
+# half of D1 that made the screen complicit: it printed "recorded in
+# numberOne.engine" over a value preflight had just overwritten.
+check "the value the row reports IS the value on disk — the 'recorded' label is true" \
+  "[ \"\$(eng_col \"\$fx1after\" numberOne 2)\" = \"\$(apj '$RFX1' numberOne.engine)\" ]"
+check "and preflight APPLIED his recorded engine, not the run's" \
+  "printf '%s' \"\$fx1pf\" | grep -q 'engine claude'"
+check "the LCARS verb was invoked with his engine (the stub log proves it)" \
+  "[ \"\$(grep -c -- 'xo.sh on --engine claude' '$STUB_LOG' | tr -d ' ')\" -gt \"${xo_claude_before:-0}\" ]"
+check "a SECOND preflight still reads his engine back unchanged" \
+  "ech '$RFX1' preflight >/dev/null 2>&1; [ \"\$(apj '$RFX1' numberOne.engine)\" = claude ]"
+
+printf '\n== S352fix/1b. [D1 CONTROL] the SHIPPED driver really does destroy it ==\n'
+
+# WITHOUT THIS ARM THE ONE ABOVE IS DECORATION: it could pass against a build
+# that never had the defect. This runs main's own preflight on the same fixture.
+if [ "$FIXBASE_OK" = 1 ]; then
+  RFX1B="$(new_repo)"; ap_init "$RFX1B"; n1_legacy_engine "$RFX1B"
+  ech_at "$MAINECH" "$RFX1B" preflight >/dev/null 2>&1
+  check "main's preflight OVERWRITES the recorded engine (the defect being cured)" \
+    "[ \"\$(apj '$RFX1B' numberOne.engine)\" != claude ]"
+  check "main's preflight DROPS the sibling key he put beside it" \
+    "[ -z \"\$(apj '$RFX1B' numberOne.note)\" ]"
+else
+  bad "could not read the baseline ech.sh from main (git show failed)"
+fi
+
+printf '\n== S352fix/1c. [D1 CONTROL] the two Number One paths that were ALREADY RIGHT are unchanged ==\n'
+
+# The tester measured both of these as correct, so the cure has to prove it did
+# not move them. The comparison is against the SHIPPED driver on an identical
+# fixture, which is a stronger claim than comparing with itself.
+if [ "$FIXBASE_OK" = 1 ]; then
+  n1_settled() {  # <repo> — choice AND appliedAt: preflight's early-return path
+    python3 - "$1/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["numberOne"] = {"choice": "on", "enabled": True, "engine": "claude",
+                  "settledAt": 1700000000, "appliedAt": 1700000001}
+json.dump(d, open(f, "w"), indent=2)
+PY
+  }
+  RFX1C="$(new_repo)"; ap_init "$RFX1C"; n1_settled "$RFX1C"
+  RFX1C2="$(new_repo)"; ap_init "$RFX1C2"; n1_settled "$RFX1C2"
+  c_before="$(n1norm "$RFX1C")"
+  cpf="$(ech "$RFX1C" preflight 2>&1)"
+  ech_at "$MAINECH" "$RFX1C2" preflight >/dev/null 2>&1
+  check "an ALREADY-SETTLED record is byte-identical after preflight" \
+    "[ \"\$(n1norm '$RFX1C')\" = \"\$c_before\" ]"
+  check "…and identical to what the SHIPPED driver leaves on the same fixture" \
+    "[ \"\$(n1norm '$RFX1C')\" = \"\$(n1norm '$RFX1C2')\" ]"
+  check "…and it still reads back 'already recorded on (engine claude)'" \
+    "printf '%s' \"\$cpf\" | grep -q '6. Number One: already recorded on (engine claude)'"
+
+  # …and the other already-right path: NO numberOne at all settles exactly as
+  # the shipped driver settles it, off the RUN's engine.
+  RFX1D="$(new_repo)"; ap_init "$RFX1D"
+  RFX1D2="$(new_repo)"; ap_init "$RFX1D2"
+  ech "$RFX1D" preflight >/dev/null 2>&1
+  ech_at "$MAINECH" "$RFX1D2" preflight >/dev/null 2>&1
+  check "with NO numberOne recorded, the settled record matches the SHIPPED one exactly" \
+    "[ -n \"\$(n1norm '$RFX1D')\" ] && [ \"\$(n1norm '$RFX1D')\" = \"\$(n1norm '$RFX1D2')\" ]"
+  check "…and that settlement took the RUN's engine, because there was nothing of his to keep" \
+    "[ \"\$(apj '$RFX1D' numberOne.engine)\" = copilot ]"
+  if [ "$(n1norm "$RFX1D")" != "$(n1norm "$RFX1D2")" ]; then
+    printf '       --- shipped ---\n%s\n       --- now ---\n%s\n' \
+      "$(n1norm "$RFX1D2")" "$(n1norm "$RFX1D")"
+  fi
+else
+  bad "could not read the baseline ech.sh from main (git show failed)"
+fi
+
+printf '\n== S352fix/2. [D2] the orchestrator row says WHERE its value came from and claims NO detection ==\n'
+
+RFX2A="$(new_repo)"; ap_init "$RFX2A"
+RFX2B="$(new_repo)"; ap_init "$RFX2B"
+python3 - "$RFX2B/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["engine"] = "claude"
+json.dump(d, open(f, "w"), indent=2)
+PY
+fx2a="$(ech "$RFX2A" engines 2>&1)"
+fx2b="$(ech "$RFX2B" engines 2>&1)"
+# THE TESTER'S OWN EVIDENCE, AS AN ASSERTION: two repos differing only in the
+# recorded field print different orchestrators from the SAME session. So the
+# value cannot be a detection of the host CLI, and the label may not say it is.
+check "[evidence] two repos differing ONLY in the recorded engine print different orchestrators" \
+  "[ \"\$(eng_col \"\$fx2a\" orchestrator 2)\" = copilot ] && [ \"\$(eng_col \"\$fx2b\" orchestrator 2)\" = claude ]"
+check "the orchestrator row NAMES the record its value came out of" \
+  "printf '%s' \"\$fx2a\" | grep -i '^ *orchestrator' | grep -qi 'autopilot.json'"
+check "and it DISCLAIMS a host-CLI detection in so many words" \
+  "printf '%s' \"\$fx2a\" | grep -i '^ *orchestrator' | grep -qi 'not a detection'"
+check "the footer no longer asserts the row simply IS the CLI driving the run" \
+  "! printf '%s' \"\$fx2a\" | grep -qi 'orchestrator = the$'"
+check "the footer says the orchestrator default is the RECORDED run engine" \
+  "printf '%s' \"\$fx2a\" | grep -qi 'recorded run engine' || printf '%s' \"\$fx2a\" | grep -qi \"the run's recorded engine\""
+# A repo with nothing in autopilot.json falls back to config.json, and that is a
+# DIFFERENT provenance, so it may not be reported with the same words.
+RFX2C="$(new_repo)"; ap_init "$RFX2C"
+python3 - "$RFX2C/.git/lcars/autopilot.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d.pop("engine", None)
+json.dump(d, open(f, "w"), indent=2)
+PY
+fx2c="$(ech "$RFX2C" engines 2>&1)"
+check "with nothing recorded for the run, the row names config.json instead" \
+  "printf '%s' \"\$fx2c\" | grep -i '^ *orchestrator' | grep -qi 'config.json'"
+
+printf '\n== S352fix/2b. [D2] the table does not claim to GOVERN what nothing reads ==\n'
+
+check "it names the rows anything actually reads today, by role" \
+  "printf '%s' \"\$fx2a\" | grep -qi 'stamped into' && printf '%s' \"\$fx2a\" | grep -qi 'delegate' && printf '%s' \"\$fx2a\" | grep -qi 'tester'"
+check "and says plainly that the other rows are recorded and reported, not launched from" \
+  "printf '%s' \"\$fx2a\" | grep -qi 'nothing launches from'"
+check "numberOne's row names the key its CONSUMER actually reads" \
+  "printf '%s' \"\$fx2a\" | grep -qi 'numberOne.engine'"
+check "DELEGATION.md no longer calls the orchestrator row a detection either" \
+  "! grep -qi 'the CLI this run is actually driven by' '$DOC'"
+
+printf '\n== S352fix/3. [D5] a BLOCKED delegate has ONE named command that reaches the ECH ==\n'
+
+RFX3="$(new_repo)"; ap_init "$RFX3"; new_mission "$RFX3" u-f3 implement
+ech "$RFX3" tier u-f3 --tier T1 --why "one owner end to end" >/dev/null 2>&1
+ech "$RFX3" delegate u-f3 >/dev/null 2>&1
+BFX3="$RFX3/.git/lcars/delegates/d1/BRIEF.md"
+check "[precondition] the brief was minted" "[ -f '$BFX3' ]"
+check "where the brief says it is blocked it gives a RUNNABLE command, not 'raise it'" \
+  "grep -q 'beat d1 \"BLOCKED' '$BFX3'"
+check "it says in so many words that a BLOCKED beat is the channel to the ECH" \
+  "grep -qi 'this is the channel' '$BFX3' || grep -qi 'that beat is how you reach the ECH' '$BFX3'"
+check "it says the ECH READS it, so the delegate knows the message lands" \
+  "grep -qi 'the ECH reads' '$BFX3'"
+check "it says that channel does NOT interrupt the captain" \
+  "grep -qi 'does not interrupt the captain' '$BFX3' || grep -qi 'never reaches the captain' '$BFX3'"
+# AND THE DOOR THE BRIEF USED TO NAME IS CLOSED AT BOTH ENDS. `ask` prints
+# QUESTION FOR THE CAPTAIN and fires the notifier, which this same brief forbids
+# four times, so it belongs in the reserved list beside `land` and `file-bug`.
+check "\`ask\` is now in the brief's RESERVED list, so a delegate does not run it" \
+  "grep -q 'The ECH keeps these to ITSELF' '$BFX3' && grep -A3 'The ECH keeps these to ITSELF' '$BFX3' | grep -q 'ask'"
+check "the brief no longer tells the delegate to escalate THROUGH \`ask\`" \
+  "! grep -qi \"through the ECH's own .ask\" '$BFX3'"
+check "DELEGATION.md names the same channel where it says the question goes up" \
+  "grep -qi 'BLOCKED' '$DOC'"
+check "DELEGATION.md no longer sends a DELEGATE to \`ask\`" \
+  "! grep -qi \"up, through the ECH's own .ask\" '$DOC'"
+
+printf '\n== S352fix/3b. [D5] and `stalled` / `status` actually SURFACE a block ==\n'
+
+ech "$RFX3" beat d1 "BLOCKED: the suite needs a credential I do not have" >/dev/null 2>&1
+fx3st="$(ech "$RFX3" stalled 2>&1)"
+fx3stat="$(ech "$RFX3" status 2>&1)"
+check "\`stalled\` reports the block IMMEDIATELY, without waiting out the silence limit" \
+  "printf '%s' \"\$fx3st\" | grep -q 'BLOCKED DELEGATE: d1'"
+check "…and quotes the delegate's own words back" \
+  "printf '%s' \"\$fx3st\" | grep -q 'credential I do not have'"
+check "…and says it is a question for the ECH, not a verdict" \
+  "printf '%s' \"\$fx3st\" | grep -qi 'not a verdict'"
+check "…and names what the ECH can do about it, with real verbs" \
+  "printf '%s' \"\$fx3st\" | grep -q 'delegate close d1' && printf '%s' \"\$fx3st\" | grep -q 'ask'"
+check "…and tallies it as its own kind, not as a silence" \
+  "printf '%s' \"\$fx3st\" | grep -qi 'delegate(s) have RAISED A BLOCK'"
+check "\`status\` flags the delegate BLOCKED on the one line it already prints" \
+  "printf '%s' \"\$fx3stat\" | grep '^  delegates:' | grep -q 'BLOCKED'"
+# THE CONTROL: an ordinary beat is not a block, and a cleared block goes quiet.
+ech "$RFX3" beat d1 "found the credential, suite is green" >/dev/null 2>&1
+check "[control] an ordinary beat is NOT reported as a block" \
+  "! printf '%s' \"\$(ech '$RFX3' stalled 2>&1)\" | grep -q 'BLOCKED DELEGATE'"
+check "[control] and \`status\` drops the flag once the delegate moves on" \
+  "! printf '%s' \"\$(ech '$RFX3' status 2>&1)\" | grep '^  delegates:' | grep -q 'BLOCKED'"
+check "[control] a CLOSED delegate's last blocked beat is not nagged about" \
+  "ech '$RFX3' beat d1 'BLOCKED: x' >/dev/null 2>&1; ech '$RFX3' delegate close d1 >/dev/null 2>&1; ! printf '%s' \"\$(ech '$RFX3' stalled 2>&1)\" | grep -q 'BLOCKED DELEGATE'"
+
+printf '\n== S352fix/3c. [D5] the door the brief sends a stuck delegate to is not an evidence-first gate ==\n'
+
+# THE TESTER FLAGGED THIS UNTESTED, AND IT IS THE OTHER WAY ROUND. The
+# `Observed live:` template is enforced by `bug_prd_problems`, which only
+# `lcars-ech file-bug` calls — and `file-bug` is RESERVED TO THE ECH. The door a
+# delegate is sent to is `lcars-log/log.sh`, which asks for a title and
+# `**Type:** bug`. So the brief must tell it what that door needs, because
+# today it names `--prd <f>` and never says what goes in the file.
+check "[measured] \`lcars log\` itself does NOT require an 'Observed live:' criterion" \
+  "! grep -qi 'observed live' '$REPO_ROOT/skills/lcars-log/log.sh'"
+check "[measured] the evidence-first gate belongs to \`file-bug\`, which is reserved to the ECH" \
+  "grep -q 'bug_prd_problems' '$SCRIPT' && grep -A3 'The ECH keeps these to ITSELF' '$BFX3' | grep -q 'file-bug'"
+check "the brief tells the delegate what the bug PRD must carry, so the door opens first time" \
+  "grep -q 'bug-prd.md' '$BFX3'"
+
+printf '\n== S352fix/4. [D4] §2 and §3 give ONE instruction about the T2 bug list ==\n'
+
+RFX4="$(new_repo)"; ap_init "$RFX4"; new_mission "$RFX4" u-f4 implement
+ech "$RFX4" tier u-f4 --tier T2 --why "it needs a fresh tester" >/dev/null 2>&1
+ech "$RFX4" delegate u-f4 >/dev/null 2>&1
+BFX4="$RFX4/.git/lcars/delegates/d1/BRIEF.md"
+check "[precondition] a T2 brief was minted" "[ -f '$BFX4' ]"
+check "§2 no longer carries the flat prohibition that contradicts §3" \
+  "! grep -qF 'The ECH files these; you do not' '$BFX4'"
+check "§2 says the delegate FILES the bug list through \`lcars log\`" \
+  "awk '/^## 2\\./{on=1} /^### And while you work/{on=0} on' '$BFX4' | grep -q 'lcars log'"
+check "§2 says what it actually may not do — ADJUDICATE them" \
+  "awk '/^## 2\\./{on=1} /^### And while you work/{on=0} on' '$BFX4' | grep -qi 'adjudicate'"
+check "§2 says it may not hand-write them INSTEAD of filing them" \
+  "awk '/^## 2\\./{on=1} /^### And while you work/{on=0} on' '$BFX4' | grep -qi 'in place of filing'"
+check "§3 still says the bug list is FILED THROUGH \`lcars log\`" \
+  "grep -q 'The bug list is FILED THROUGH' '$BFX4'"
+check "and the ECH still files its OWN bugs regardless" \
+  "grep -q 'file-bug' '$BFX4'"
+
+printf '\n== S352fix/5. [D9] DELEGATION.md describes the preflight item that actually SHIPS ==\n'
+
+check "it no longer claims a Question 7 that OFFERS a table and TAKES overrides" \
+  "! grep -qi 'Question 7 offers the recommended table' '$DOC'"
+check "it no longer says the table is 'recorded on answer' — nothing is answered" \
+  "! grep -qi 'recorded on answer' '$DOC'"
+check "it says preflight STATES the recommended table and records the settlement once" \
+  "grep -qi 'states the recommended table' '$DOC'"
+check "it says the item is never raised again once recorded" \
+  "grep -qi 'never re-asked' '$DOC' || grep -qi 'never raised again' '$DOC'"
+check "it names the real override — \`record engines.<role>.engine\`" \
+  "grep -q 'record engines.<role>.engine' '$DOC'"
+check "it says WHY there is no seventh prompt rather than leaving a silent deviation" \
+  "grep -qi 'no seventh prompt' '$DOC'"
+
+printf '\n== S352fix/6. [D8] a FREE→BILLED substitution is in the BRIEF and in the RECORD ==\n'
+
+RFX6="$(new_repo)"; ap_init "$RFX6"; new_mission "$RFX6" u-f6 implement
+ech "$RFX6" record engines.delegate.engine copilot >/dev/null 2>&1
+ech "$RFX6" tier u-f6 --tier T1 --why "one owner end to end" >/dev/null 2>&1
+LCARS_COPILOT_BIN=copilot-not-installed-here ech "$RFX6" delegate u-f6 >/dev/null 2>&1
+BFX6="$RFX6/.git/lcars/delegates/d1/BRIEF.md"
+check "[precondition] the brief was minted with copilot missing from the machine" "[ -f '$BFX6' ]"
+check "it runs on claude, because that is all the machine has" \
+  "[ \"\$(apj '$RFX6' delegates.d1.engine)\" = claude ]"
+check "the brief NAMES the engine that was actually RECORDED for the row" \
+  "grep -qi 'recorded for this row was .copilot' '$BFX6' || grep -q 'recorded as \`copilot\`' '$BFX6'"
+check "the brief says it is not installed here and that THIS RUN substituted" \
+  "grep -qi 'not installed' '$BFX6' && grep -qi 'substitut' '$BFX6'"
+check "the brief does not pass the substituted engine off as the captain's cost decision" \
+  "grep -qi 'nobody recorded' '$BFX6' || grep -qi 'not a choice the captain made' '$BFX6'"
+check "the RECORD carries the recorded row, not just the resolved one" \
+  "[ \"\$(apj '$RFX6' delegates.d1.engineRecorded)\" = copilot ]"
+check "the RECORD carries the substitution as a fact, written by its producer" \
+  "[ \"\$(apj '$RFX6' delegates.d1.engineSubstituted)\" = true ]"
+# THE CONTROL GREPS THE SUBSTITUTION'S OWN HEADING, not the word. The standing
+# paragraph above it already ends "…not a substitution you make quietly", so a
+# bare `substitut` matches every brief ever minted and the control would have
+# been decoration (it failed on exactly that, first run).
+check "[control] with no substitution the record flags none and the brief says nothing of it" \
+  "[ -z \"\$(apj '$R7' delegates.d1.engineSubstituted)\" ] && [ \"\$(apj '$R7' delegates.d1.engineRecorded)\" = copilot ] && ! grep -qi 'A SUBSTITUTION WAS MADE' '$R7/.git/lcars/delegates/d1/BRIEF.md'"
+
+printf '\n== S352fix/7. [D6] every seat a delegate opens takes the `delegate` row ==\n'
+
+check "the T2 brief says a SUB-DELEGATE seat takes the same stamped row" \
+  "grep -qi 'sub-delegate' '$BFX4'"
+check "the rule covers ANY seat it opens, not just the one it is fluent in" \
+  "grep -qi 'every seat you open' '$BFX4'"
+check "and it may not open one on another engine without asking the ECH first" \
+  "grep -qi 'without asking the ECH' '$BFX4'"
+check "the T1 brief carries the same rule (a T1 delegate can open a seat too)" \
+  "grep -qi 'every seat you open' '$BFX3'"
+
+printf '\n== S352fix/8. [D7] a delegate ALREADY IN the wrong seat must STOP ==\n'
+
+check "the brief tells it to check the seat it is ALREADY in" \
+  "grep -qi 'the seat you are in' '$BFX3'"
+check "…and to STOP rather than bill the unit to whatever it was pasted into" \
+  "grep -i 'the seat you are in' '$BFX3' | grep -qi 'stop' || grep -A3 -i 'the seat you are in' '$BFX3' | grep -qi 'stop'"
+check "…and the stop goes to the ECH, through the channel this round names" \
+  "grep -A4 -i 'the seat you are in' '$BFX3' | grep -qi 'BLOCKED'"
+
+printf '\n== S352fix/9. [D10] `status` points at the matrix the captain would otherwise never find ==\n'
+
+fx9="$(ech "$RFX2A" status 2>&1)"
+check "\`status\` names the verb that prints who runs what" \
+  "printf '%s' \"\$fx9\" | grep -q 'engines'"
+check "the pointer rides a line \`status\` already prints (no third standalone line)" \
+  "printf '%s' \"\$fx9\" | grep -E '^  (tiers|delegates):' | grep -q 'engines'"
+
+printf '\n== S352fix2/1. [Item 2] a READER of `delegate_beat_rows` cannot silently absorb a new column ==\n'
+
+# THE DEFECT THIS LOCKS, AND WHY IT IS WORTH A ROUND ON ITS OWN. S351 gave
+# `delegate_beat_rows` ten columns; S350-S352 grew it to thirteen. `cmd_watch`'s
+# reader was never widened, so its LAST variable silently held three fields
+# joined by tabs. It was harmless only because that variable is never printed --
+# and the previous round kept it harmless by placing a new column BEFORE the
+# trailing one so no reader's last variable swallowed it. That is a rule
+# somebody has to REMEMBER, and the next person to add a column is a capstone
+# session that has never read this file.
+#
+# SO THE CONTRACT IS MECHANISED, in two halves that cannot both be forgotten:
+#   1. the row's shape is DECLARED ONCE, as `DELEGATE_ROW_COLS` in the producer,
+#      and the producer checks the row it actually emits against that
+#      declaration and SAYS SO ON STDERR when they drift;
+#   2. every reader binds all of those columns PLUS a visibly-named trailing
+#      remainder (`*extra`) that must come back empty -- so an unbound tail is
+#      LOUD at runtime instead of hidden in a variable nobody prints.
+# This test is the half that bites at build time: it reads the declaration and
+# every reader out of the SOURCE and fails if their arities disagree. Add a
+# fourteenth column and this goes red until every reader is widened.
+ROWGUARD="$TMPROOT/rowguard.py"
+cat >"$ROWGUARD" <<'ROWGUARD_PY'
+import re, sys
+src = open(sys.argv[1]).read().splitlines()
+decl = [l for l in src if l.startswith("DELEGATE_ROW_COLS=")]
+if len(decl) != 1:
+    print("NO-DECL: expected exactly one DELEGATE_ROW_COLS= line, found %d" % len(decl))
+    sys.exit(1)
+cols = decl[0].split("=", 1)[1].strip().strip("'\"").split()
+readers, problems = [], []
+# A READER THE GUARD CANNOT SEE IS A HOLE IN IT. What follows recognises ONE
+# idiom -- a `while ... read -r` loop fed by `done <<X` / `$(delegate_beat_rows)`
+# -- so a reader written any other way (a pipe, a process substitution) would be
+# unchecked and the contract would quietly be a habit again. So every INVOCATION
+# of the producer is counted too, and one in an unrecognised form is itself a
+# problem: write it the way the others are, or teach this guard. Mentions inside
+# quotes (the producer's own stderr message, `delegate_row_extra`'s printf) are
+# not invocations, so quoted runs are stripped before the search.
+def unquoted(l):
+    out, q = [], None
+    for ch in l:
+        if q:
+            if ch == q:
+                q = None
+            continue
+        if ch in "'\"":
+            q = ch
+            continue
+        out.append(ch)
+    return "".join(out)
+for i, l in enumerate(src):
+    t = l.strip()
+    if t.startswith("#") or t.startswith("delegate_beat_rows() {") or t == "$(delegate_beat_rows)":
+        continue
+    if "delegate_beat_rows" in unquoted(l):
+        problems.append("line %d invokes delegate_beat_rows in a form this guard does not "
+                        "recognise, so its reader is UNCHECKED: %s" % (i + 1, t))
+for i, l in enumerate(src):
+    # a reader is a loop FED BY the producer: `done <<X` / `$(delegate_beat_rows)`
+    if l.strip() != "$(delegate_beat_rows)":
+        continue
+    if not src[i - 1].lstrip().startswith("done <<"):
+        continue
+    j = i - 1
+    while j >= 0 and not ("while" in src[j] and "read -r" in src[j]):
+        j -= 1
+    if j < 0:
+        problems.append("line %d: fed by delegate_beat_rows but no `while ... read -r` above it" % (i + 1))
+        continue
+    names = re.split(r";|\bdo\b", src[j].split("read -r", 1)[1])[0].split()
+    readers.append((j + 1, names))
+    if len(names) != len(cols) + 1:
+        problems.append(
+            "line %d binds %d names; the row declares %d columns, so it needs %d "
+            "(every column + a trailing remainder): %s"
+            % (j + 1, len(names), len(cols), len(cols) + 1, " ".join(names)))
+    elif not names[-1].endswith("extra"):
+        problems.append(
+            "line %d binds the right NUMBER but its last name (%s) is not a visible "
+            "remainder (*extra), so a new column would land in a meaningful variable"
+            % (j + 1, names[-1]))
+print("COLS=%d READERS=%d PROBLEMS=%d" % (len(cols), len(readers), len(problems)))
+for p in problems:
+    print("  " + p)
+sys.exit(1 if problems else 0)
+ROWGUARD_PY
+
+check "every reader of \`delegate_beat_rows\` binds every column it emits, plus a named remainder" \
+  "python3 '$ROWGUARD' '$SCRIPT'"
+python3 "$ROWGUARD" "$SCRIPT" 2>&1 | sed 's/^/       /'
+check "[control] the guard really found the readers it is guarding (three of them, at least)" \
+  "[ \"\$(python3 '$ROWGUARD' '$SCRIPT' | sed -n 's/.*READERS=\([0-9]*\).*/\1/p')\" -ge 3 ]"
+MUT_IDIOM="$TMPROOT/ech-unseen-reader.sh"
+{ cat "$SCRIPT"; printf 'unseen_reader() { delegate_beat_rows | while IFS= read -r a b; do :; done; }\n'; } >"$MUT_IDIOM"
+check "[mutation] ADD a reader in an idiom the guard cannot see -- it is REPORTED, not ignored" \
+  "! python3 '$ROWGUARD' '$MUT_IDIOM' >/dev/null"
+
+# THE MUTATION PROOF, so the assertion above is not vacuously green. A guard
+# that passes on a source nobody could fail is decoration; these two mutations
+# are the exact two shapes the contract exists to catch.
+MUT_COL="$TMPROOT/ech-extra-column.sh"
+sed "s/^\(DELEGATE_ROW_COLS='[^']*\)'/\1 newcolumn'/" "$SCRIPT" >"$MUT_COL"
+check "[control] the mutation really did add a column to the declaration" \
+  "grep -q \"^DELEGATE_ROW_COLS='.* newcolumn'\" '$MUT_COL'"
+check "[mutation] ADD a column and leave the readers alone -- the guard goes RED" \
+  "! python3 '$ROWGUARD' '$MUT_COL' >/dev/null"
+MUT_READER="$TMPROOT/ech-narrow-reader.sh"
+sed 's/ wextra; do/; do/' "$SCRIPT" >"$MUT_READER"
+check "[control] the mutation really did narrow one reader" \
+  "! cmp -s '$SCRIPT' '$MUT_READER'"
+check "[mutation] NARROW one reader by one variable -- the guard goes RED" \
+  "! python3 '$ROWGUARD' '$MUT_READER' >/dev/null"
+
+printf '\n== S352fix2/2. [Item 2] the producer itself says so when the declaration drifts ==\n'
+
+# THE RUNTIME HALF. The declaration and the row are checked against each other
+# by the producer, ONCE, and a drift is written to stderr -- it never suppresses
+# a row, because no rows at all is the all-quiet false green this whole lane
+# exists to prevent.
+RFX2R="$(new_repo)"; ap_init "$RFX2R"; new_mission "$RFX2R" u-f2r implement
+ech "$RFX2R" tier u-f2r --tier T1 --why "one owner end to end" >/dev/null 2>&1
+ech "$RFX2R" delegate u-f2r >/dev/null 2>&1
+fx2r_id="$(python3 - "$RFX2R/.git/lcars/autopilot.json" <<'FX2R_PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ks = sorted((d.get("delegates") or {}))
+print(ks[0] if ks else "")
+FX2R_PY
+)"
+check "[control] the fixture really has a delegate to emit a row for" \
+  "[ -n \"\$fx2r_id\" ]"
+# AND IT IS AGED PAST THE LIMIT IN THE RECORD, not with an env var: the record
+# is the seam the rest of this suite drives, and a fixture that states its own
+# condition beats one that depends on an export reaching a child.
+python3 - "$RFX2R/.git/lcars/autopilot.json" <<'FX2R_AGE'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+for v in (d.get("delegates") or {}).values():
+    v["lastBeatAt"] = 1700000000
+json.dump(d, open(f, "w"), indent=2)
+FX2R_AGE
+check "with the declaration matching the row, nothing is said on stderr" \
+  "[ -z \"\$(ech '$RFX2R' stalled 2>&1 >/dev/null | grep -i 'DELEGATE_ROW_COLS')\" ]"
+check "[mutation] with a column declared that is not emitted, the producer SAYS SO on stderr" \
+  "ech_at '$MUT_COL' '$RFX2R' stalled 2>&1 >/dev/null | grep -qi 'DELEGATE_ROW_COLS'"
+# AND THE ROW SURVIVES THE DRIFT. `stalled` is the reader asked here, not
+# `status`: a copy of the driver outside its own skill dir cannot find the
+# sibling helpers `status` reads, and that would make this assertion measure the
+# fixture rather than the producer.
+#
+# THE OUTPUT IS CAPTURED BEFORE IT IS GREPPED, and that is not a style choice.
+# `ech … | grep -q` reds under this suite's `pipefail`: `grep -q` exits on the
+# FIRST match, the driver is still writing, it takes SIGPIPE, and the pipeline
+# reports 141 even though the match was found. Measured — the first version of
+# these two assertions failed exactly that way, on the CONTROL as well, which is
+# what showed it was the harness and not the mutation.
+check "[mutation] ...and it still reports the delegate rather than going silently all-quiet" \
+  "printf '%s' \"\$(ech_at '$MUT_COL' '$RFX2R' stalled 2>/dev/null)\" | grep -q \"\$fx2r_id\""
+check "[control] the clean driver reports it on the same fixture (so that is not measuring a broken copy)" \
+  "printf '%s' \"\$(ech '$RFX2R' stalled 2>/dev/null)\" | grep -q \"\$fx2r_id\""
+
+printf '\n== S352fix2/3. [Item 2] `watch` reads the SAME thirteen columns `stalled` does ==\n'
+
+# THE ORIGINAL SYMPTOM, ASSERTED DIRECTLY: `cmd_watch` bound ten of thirteen,
+# so `wline` held `limit`, `limitsrc`, `blocked` and the last words joined by
+# tabs. Harmless only because nothing printed it.
+wbody="$(awk '$0 == "cmd_watch() {" {on=1} on {print} on && $0 == "}" {exit}' "$SCRIPT")"
+check "[control] that really is cmd_watch's body" \
+  "printf '%s' \"\$wbody\" | grep -q 'timerless guard active'"
+check "\`cmd_watch\`'s reader declares every column as a local, remainder included" \
+  "printf '%s' \"\$wbody\" | grep -q 'wblocked' && printf '%s' \"\$wbody\" | grep -q 'wlimitsrc' && printf '%s' \"\$wbody\" | grep -q 'wextra'"
+check "and \`wline\` is a last-words column, not a tail of three fields joined together" \
+  "printf '%s' \"\$wbody\" | grep 'read -r wdid' | grep -q 'wline wextra'"
 
 printf '\n== ZERO SPEND ==\n'
 
