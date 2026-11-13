@@ -2895,6 +2895,30 @@ new_mission "$RPO" lcars-20261001-020 verify
 # exist is the `deploy succeeded` of overrides.
 LCEVOK="$TMPROOT/override-evidence.txt"
 printf 'ran the step by hand: python3 missing on the runner\n' >"$LCEVOK"
+# THE FIXTURE NOW STATES ITS OWN PRECONDITION (S353). `policy --mission <m>`
+# reads the RECORDED live-check verdict (`liveChecks.<m>.verdict`, written by
+# `live-check done`) and REFUSES a `--live-check` flag that disagrees with it or
+# that has no record behind it at all — the cure for the measured route by which
+# a delegate's cheerful "all green", typed as `--live-check pass`, reached a
+# merge. NOT ONE ASSERTION IN THIS BLOCK CHANGED: the rows below still assert the
+# same table, the same refusals and the same recorded override. What changed is
+# that a mission-named call is now a CHECKED call, so these fixtures record the
+# live check their calls claim — the same way the rest of this suite writes the
+# record it drives. The flagless and mission-less rows are untouched: with no
+# mission there is nothing to look up (see `policy`'s own UNVERIFIED line).
+lc_recorded() { # <repo> <mission> <verdict>
+  python3 - "$1/.git/lcars/autopilot.json" "$2" "$3" <<'LCREC_PY'
+import json, sys
+f, mission, verdict = sys.argv[1:]
+d = json.load(open(f))
+rec = d.setdefault("liveChecks", {}).setdefault(mission, {})
+rec["verdict"] = verdict
+rec["evidence"] = "/dev/null"
+json.dump(d, open(f, "w"), indent=2)
+LCREC_PY
+}
+lc_recorded "$RPO" lcars-20261001-020 pass
+
 polact() { # <args…> → the ACTION line's value
   ap "$RPO" policy "$@" 2>&1 | sed -n 's/^ACTION: //p'
 }
@@ -2931,6 +2955,9 @@ RPO2="$(new_repo)"
 ap "$RPO2" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
 new_mission "$RPO2" lcars-20261001-020 verify
 OVL="$RPO2/.git/lcars/autopilot-overrides.jsonl"
+# …and the same precondition for the ledger fixture: POLOV below names the
+# mission, so it is a checked call now (S353).
+lc_recorded "$RPO2" lcars-20261001-020 pass
 POLNOE="$(ap "$RPO2" policy --verdict low --reason infrastructure --live-check pass 2>&1)"; polnerc=$?
 check "an OVERRIDE with no --evidence is REFUSED (an unevidenced override is a shrug)" \
   "[ $polnerc -ne 0 ]"

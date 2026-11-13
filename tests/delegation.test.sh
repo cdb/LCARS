@@ -1140,19 +1140,56 @@ for doc in "$DOC" "$TPL" "$REPO_ROOT/skills/lcars-eeh/ORCHESTRATION.md"; do
   done
 done
 
-printf '\n== D11. LEDGERED, NOT CURED: cmd_policy predates this session ==\n'
+printf '\n== D11. CURED IN S353: cmd_policy no longer believes the --live-check flag ==\n'
 
-# `policy --mission M2 --verdict high --live-check pass` answers merge even when
-# the recorded live check said bugs. That is an INHERITED defect: per
-# ORCHESTRATION.md an inherited defect is LEDGERED, not cured inline, because
-# curing it turns a one-session slice into a mini-round. This pins the claim the
-# ledger entry rests on — that this round did not touch it.
+# THIS BLOCK'S PREMISE IS RETIRED, DELIBERATELY AND BY NAME (S353). What stood
+# here, verbatim, was:
+#
+#   printf '\n== D11. LEDGERED, NOT CURED: cmd_policy predates this session ==\n'
+#
+#   # `policy --mission M2 --verdict high --live-check pass` answers merge even when
+#   # the recorded live check said bugs. That is an INHERITED defect: per
+#   # ORCHESTRATION.md an inherited defect is LEDGERED, not cured inline, because
+#   # curing it turns a one-session slice into a mini-round. This pins the claim the
+#   # ledger entry rests on — that this round did not touch it.
+#   fnbody_at() { awk -v f="$2" '$0 == f"() {" {on=1} on {print} on && $0 == "}" {exit}' "$1"; }
+#   git -C "$REPO_ROOT" show main:skills/lcars-eeh/ech.sh >"$TMPROOT/main-ech-d11.sh" 2>/dev/null
+#   pa="$(fnbody_at "$TMPROOT/main-ech-d11.sh" cmd_policy)"
+#   pb="$(fnbody_at "$REPO_ROOT/skills/lcars-eeh/ech.sh" cmd_policy)"
+#   check "cmd_policy() source is byte-identical to main (inherited, deliberately untouched)" \
+#     "[ -n \"$pa\" ] && [ \"$pa\" = \"$pb\" ]"
+#
+# The ledger entry that pin backed said the defect was inherited and left alone
+# for a round of its own. THAT ROUND IS S353: the captain approved curing it by
+# name, because S350-S352 made delegates real and this was the last surviving
+# route by which a delegate's WORD could land unverified work. The pin's premise
+# — "deliberately untouched" — is exactly what is being retired, so keeping it
+# would be asserting a promise nobody is making any more.
+#
+# A DELETED PIN WITH NOTHING IN ITS PLACE IS HOW A GUARANTEE QUIETLY DISAPPEARS,
+# so the pin is REPLACED, not removed: the positive assertion of the NEW
+# contract is that `cmd_policy` READS the recorded verdict rather than believing
+# the caller. The behavioural proof is § S353/1 below (both directions of
+# disagreement, the unrecorded case, the no-mission case, and the agreement path
+# asserted byte-identical to shipped `main`); this is the structural half — the
+# function is held to reading the producer's record, so a future round cannot
+# satisfy S353/1 by inventing a second record of its own.
 fnbody_at() { awk -v f="$2" '$0 == f"() {" {on=1} on {print} on && $0 == "}" {exit}' "$1"; }
 git -C "$REPO_ROOT" show main:skills/lcars-eeh/ech.sh >"$TMPROOT/main-ech-d11.sh" 2>/dev/null
 pa="$(fnbody_at "$TMPROOT/main-ech-d11.sh" cmd_policy)"
 pb="$(fnbody_at "$REPO_ROOT/skills/lcars-eeh/ech.sh" cmd_policy)"
-check "cmd_policy() source is byte-identical to main (inherited, deliberately untouched)" \
-  "[ -n \"\$pa\" ] && [ \"\$pa\" = \"\$pb\" ]"
+check "[control] both bodies were really read (so what follows is not comparing two empty strings)" \
+  "[ -n \"\$pa\" ] && [ -n \"\$pb\" ]"
+check "cmd_policy() is NO LONGER the inherited one — S353 cured it" \
+  "[ \"\$pa\" != \"\$pb\" ]"
+check "cmd_policy() READS the recorded live-check verdict the producer wrote" \
+  "printf '%s' \"\$pb\" | grep -qF 'liveChecks.\$mission.verdict'"
+check "...through \`ap_j\`, i.e. the autopilot record, not a second record of its own" \
+  "printf '%s' \"\$pb\" | grep -qE 'ap_j \"liveChecks'"
+check "...and shipped \`main\` genuinely did NOT read it (so that is a real change)" \
+  "! printf '%s' \"\$pa\" | grep -qF 'liveChecks'"
+check "it REFUSES rather than acting on a value it was handed" \
+  "printf '%s' \"\$pb\" | grep -qF 'A REPORT IS NOT A VERDICT'"
 
 # ==========================================================================
 # S350 FIX ROUND 2 — two defects the orchestrator found by driving round 1's
@@ -2901,12 +2938,73 @@ fnbody() { # <file> <fname>
   awk -v f="$2" '$0 == f"() {" {on=1} on {print} on && $0 == "}" {exit}' "$1"
 }
 git -C "$REPO_ROOT" show main:skills/lcars-eeh/ech.sh >"$TMPROOT/main-ech.sh" 2>/dev/null
-for fn in cmd_next build_plan; do
+# `cmd_next` CAME OUT OF THIS LIST IN S353, and `build_plan` STAYS IN IT. What
+# stood here, verbatim, was:
+#
+#   for fn in cmd_next build_plan; do
+#     a="$(fnbody "$TMPROOT/main-ech.sh" "$fn")"
+#     b="$(fnbody "$REPO_ROOT/skills/lcars-eeh/ech.sh" "$fn")"
+#     check "$fn() source is byte-identical to main (UNTOUCHED)" \
+#       "[ -n \"$a\" ] && [ \"$a\" = \"$b\" ]"
+#   done
+#
+# WHY `cmd_next` HAD TO MOVE. S351/S352 taught four surfaces to notice a quiet
+# delegate — `stalled`, `watch`, `status`, the hourly heartbeat — and NOT the
+# verb the hologram drives its loop on, so a silent delegate was caught by a
+# cron entry rather than by the question asked at every step. Curing that means
+# touching this function; the pin's claim ("UNTOUCHED") cannot survive it.
+#
+# WHY `build_plan` DID NOT. The one `NEXT:` line is still the plan's, and the
+# plan still has no opinion about who does the work: S353 adds a conditional
+# BANNER above it and changes no action, no argument and no ordering. Keeping
+# this pin on `build_plan` is what makes that claim an assertion rather than a
+# sentence in a commit message.
+for fn in build_plan; do
   a="$(fnbody "$TMPROOT/main-ech.sh" "$fn")"
   b="$(fnbody "$REPO_ROOT/skills/lcars-eeh/ech.sh" "$fn")"
   check "$fn() source is byte-identical to main (UNTOUCHED)" \
     "[ -n \"\$a\" ] && [ \"\$a\" = \"\$b\" ]"
 done
+# AND THE REPLACEMENT FOR THE PIN THAT CAME OUT. A deleted pin with nothing in
+# its place is how a guarantee quietly disappears, so `cmd_next` is still held
+# to something — and to the thing that actually matters now:
+#   1. it is NOT the inherited one (the cure is really there),
+#   2. the ONLY thing it gained is one call to the shared delegate reporter, so
+#      it cannot have grown a second opinion about silence, and
+#   3. the behavioural half is § S353/2 below, which asserts BOTH directions:
+#      byte-identical to shipped `main` with no delegate (and with a healthy
+#      one), and surfacing the delegate when one is silent or blocked.
+nexta="$(fnbody "$TMPROOT/main-ech.sh" cmd_next)"
+nextb="$(fnbody "$REPO_ROOT/skills/lcars-eeh/ech.sh" cmd_next)"
+check "[control] both cmd_next bodies were really read" \
+  "[ -n \"\$nexta\" ] && [ -n \"\$nextb\" ]"
+check "cmd_next() is NO LONGER byte-identical to main — S353 taught the LOOP'S verb to see a delegate" \
+  "[ \"\$nexta\" != \"\$nextb\" ]"
+# THE ADDED LINES ARE COUNTED WITH COMMENTS AND BLANKS STRIPPED FIRST, by
+# comparing the two bodies' CODE only. An earlier draft counted `diff`'s `>`
+# lines with `grep -c '^> *[^#]'` and that pattern matches a COMMENT line too
+# (` *` happily matches zero spaces, leaving the leading space to satisfy
+# `[^#]`), which would have made this assertion green no matter what was added.
+printf '%s\n' "$nexta" | sed 's/[[:space:]]*#.*$//' | grep -v '^[[:space:]]*$' >"$TMPROOT/next-main.code"
+printf '%s\n' "$nextb" | sed 's/[[:space:]]*#.*$//' | grep -v '^[[:space:]]*$' >"$TMPROOT/next-now.code"
+check "...and the ONLY executable line it gained is a call to the SHARED delegate reporter" \
+  "[ \"\$(diff '$TMPROOT/next-main.code' '$TMPROOT/next-now.code' | grep -c '^> ')\" = 1 ]"
+check "...and it REMOVED no executable line at all" \
+  "[ \"\$(diff '$TMPROOT/next-main.code' '$TMPROOT/next-now.code' | grep -c '^< ')\" = 0 ]"
+# AND THE PIPEFAIL TRAP, MEASURED. The first version of this was
+#   diff A B | grep '^> ' | grep -qE '^> +delegate_attention_say$'
+# inside `check`, and it RED while both sibling assertions above it went green —
+# because `diff` exits 1 whenever the files differ, and this suite runs under
+# `set -o pipefail`, so the pipeline reported 1 even though `grep -q` matched.
+# Exactly the hazard the S352fix2/3 block documents one screen down for `grep -q`
+# and SIGPIPE. So the added lines are CAPTURED FIRST and matched afterwards.
+next_added="$(diff "$TMPROOT/next-main.code" "$TMPROOT/next-now.code" | grep '^> ' || true)"
+check "...that one added line being the reporter call" \
+  "printf '%s' \"\$next_added\" | grep -qE '^> +delegate_attention_say$'"
+check "...which is \`delegate_attention_say\`, the reader of \`delegate_beat_rows\`" \
+  "printf '%s' \"\$nextb\" | grep -qE '^ *delegate_attention_say$'"
+check "cmd_next does NOT read the delegate record itself (one producer, no second opinion)" \
+  "! printf '%s' \"\$nextb\" | grep -qE 'delegate_beat_rows|lastBeatAt|delegates\\.'"
 
 # ==========================================================================
 # S352 FIX ROUND 1 — the twelve findings a fresh tester brought back.
@@ -3450,6 +3548,366 @@ check "\`cmd_watch\`'s reader declares every column as a local, remainder includ
   "printf '%s' \"\$wbody\" | grep -q 'wblocked' && printf '%s' \"\$wbody\" | grep -q 'wlimitsrc' && printf '%s' \"\$wbody\" | grep -q 'wextra'"
 check "and \`wline\` is a last-words column, not a tail of three fields joined together" \
   "printf '%s' \"\$wbody\" | grep 'read -r wdid' | grep -q 'wline wextra'"
+
+# ==========================================================================
+# S353 — THE TWO PLACES THE HOLOGRAM STILL TOOK SOMETHING ON FAITH
+#
+# S350-S352 taught the hologram to hand work to a DELEGATE, and the rule that
+# makes a delegate's output trustworthy is that A DELEGATE'S HAND-BACK IS A
+# REPORT, NEVER A VERDICT: the hologram verifies the work itself. Number One
+# filed 0 of 31 bugs on the modelled run and every one came from the hologram's
+# own looking. Two routes still let something arrive unverified:
+#
+#   FIX 1  `policy` believed `--live-check pass|bugs` AS AN ARGUMENT. Measured,
+#          with the record already on disk:
+#              lcars-ech live-check done M2 --verdict bugs   # recorded: bugs
+#              lcars-ech policy --mission M2 --verdict high --live-check pass
+#              ACTION: merge
+#              WHY: Number One says high and the live check passed.
+#          and it answered `merge` when NO live check had ever been run. So a
+#          hologram that trusted a delegate's cheerful "all green" and typed
+#          `--live-check pass` reached a merge. The PRODUCER already writes the
+#          fact down (`liveChecks.<m>.verdict`, written by `live-check done`),
+#          so `policy` reads it instead of believing the caller.
+#
+#   FIX 2  `cmd_next` — the verb the hologram drives its LOOP on — was the one
+#          surface that could not see a quiet delegate. S351/S352 taught FOUR
+#          (`stalled`, `watch`, `status`, the hourly heartbeat) and not this
+#          one, so a silent delegate was caught by an hourly timer rather than
+#          by the thing the hologram asks at every single step.
+# ==========================================================================
+
+printf '\n== S353/1. `policy` reads the RECORDED live-check verdict instead of believing the flag ==\n'
+
+# THE FIXTURE STATES ITS OWN CONDITION, in the record the PRODUCER writes
+# (`liveChecks.<m>.verdict`, set by `live-check done`) — written directly here
+# for the same reason the rest of this suite writes the record directly: the
+# record is the seam under test, and driving `live-check` end to end would make
+# this measure the paired-evidence validator instead.
+lc_record() { # <repo> <mission> <verdict>
+  python3 - "$1/.git/lcars/autopilot.json" "$2" "$3" <<'LC_PY'
+import json, sys
+f, mission, verdict = sys.argv[1:]
+d = json.load(open(f))
+lcs = d.setdefault("liveChecks", {})
+rec = lcs.setdefault(mission, {})
+rec["verdict"] = verdict
+rec["evidence"] = "/dev/null"
+json.dump(d, open(f, "w"), indent=2)
+LC_PY
+}
+
+R531="$(new_repo)"; ap_init "$R531"; new_mission "$R531" u-531 verify
+lc_record "$R531" u-531 bugs
+check "[control] the record really says bugs" \
+  "[ \"\$(apj '$R531' liveChecks.u-531.verdict)\" = bugs ]"
+
+# --- THE MEASURED REPRO, now refused ---------------------------------------
+P531="$(ech "$R531" policy --mission u-531 --verdict high --live-check pass 2>&1)"; p531rc=$?
+check "the measured repro is REFUSED: --live-check pass against a recorded \`bugs\`" \
+  "[ $p531rc -ne 0 ]"
+check "...and it reaches NO action at all, merge-shaped or otherwise" \
+  "! printf '%s' \"\$P531\" | grep -q '^ACTION: '"
+check "the refusal QUOTES the recorded verdict it read" \
+  "printf '%s' \"\$P531\" | grep -q 'bugs'"
+check "the refusal names the producer verb that would change the record" \
+  "printf '%s' \"\$P531\" | grep -q 'live-check done'"
+check "the refusal says plainly that a report is not a verdict" \
+  "printf '%s' \"\$P531\" | grep -qi 'not a verdict'"
+
+# --- THE DISAGREEMENT IS SYMMETRIC -----------------------------------------
+# `pass` typed over a recorded `bugs` is the dangerous direction, but acting on
+# the RECORD instead of refusing is unsafe in the OTHER direction: a recorded
+# `pass` with `bugs` typed would then be answered `merge` — a merge nobody
+# asked for, decided against the operator's own stated observation. A refusal is
+# the only answer that is safe both ways, and it is the voice `cmd_policy`'s
+# neighbours already use ("an override with no evidence on disk is a shrug").
+R532="$(new_repo)"; ap_init "$R532"; new_mission "$R532" u-532 verify
+lc_record "$R532" u-532 pass
+P532="$(ech "$R532" policy --mission u-532 --verdict high --live-check bugs 2>&1)"; p532rc=$?
+check "the OTHER direction is refused too: --live-check bugs against a recorded \`pass\`" \
+  "[ $p532rc -ne 0 ]"
+check "...and it does not quietly act on the record and answer merge" \
+  "! printf '%s' \"\$P532\" | grep -q '^ACTION: merge'"
+
+# --- NO VERDICT EVER RECORDED ----------------------------------------------
+# The captain's second half: it also answered `merge` when NO live check had
+# ever been run. A mission with nothing on disk is the delegate's-word case with
+# the record missing entirely.
+R533="$(new_repo)"; ap_init "$R533"; new_mission "$R533" u-533 verify
+check "[control] that fixture really has no recorded live check" \
+  "[ -z \"\$(apj '$R533' liveChecks.u-533.verdict)\" ]"
+P533="$(ech "$R533" policy --mission u-533 --verdict high --live-check pass 2>&1)"; p533rc=$?
+check "a named mission with NO recorded live check is REFUSED" \
+  "[ $p533rc -ne 0 ]"
+check "...and reaches no action" \
+  "! printf '%s' \"\$P533\" | grep -q '^ACTION: '"
+check "the refusal names the mission it could find nothing for" \
+  "printf '%s' \"\$P533\" | grep -q 'u-533'"
+check "the refusal names the command that records one" \
+  "printf '%s' \"\$P533\" | grep -q 'live-check'"
+# AND NO OVERRIDE IS LEDGERED BY A REFUSAL. An override is merge-shaped, so the
+# `low + infrastructure` row must be refused on an unrecorded live check too —
+# and a refusal that still wrote to the permanent ledger would be worse than
+# the defect.
+EV533="$TMPROOT/s353-evidence.txt"
+printf 'the runner had no python3\n' >"$EV533"
+ech "$R533" policy --mission u-533 --verdict low --reason infrastructure \
+    --live-check pass --evidence "$EV533" >/dev/null 2>&1
+check "a refused OVERRIDE writes nothing to the overrides ledger" \
+  "[ ! -s '$R533/.git/lcars/autopilot-overrides.jsonl' ]"
+
+# --- AGREEMENT IS UNTOUCHED, AND THAT IS ASSERTED BYTE FOR BYTE ------------
+# The cure must change exactly one thing. When the flag AGREES with the record,
+# the output is compared against the SHIPPED driver from `main` on the same
+# fixture: every word of the action, the playbook heading and the THEN commands.
+# DECLARED BEFORE THE BRANCH for the same reason R538 is below: this suite runs
+# under `set -u` and one assertion past the `fi` reads R534, so a missing
+# baseline must not turn into a parse-time abort of the whole suite.
+R534=""
+BASE53="$TMPROOT/baseline53"
+mkdir -p "$BASE53"
+# THE /private PREFIX, MEASURED. On macOS `mktemp -d` hands back
+# /var/folders/... while the kernel resolves it to /private/var/folders/..., and
+# `policy`'s THEN lines print the RESOLVED path. So normalising `$BASE53` alone
+# left `/private@ROOT@/...` in the baseline against `@ROOT@/...` in the new
+# output, and three byte-identity assertions RED for no product reason at all —
+# the comparison was measuring the fixture's own path spelling. `norm53` strips
+# the prefix in BOTH spellings from BOTH sides, and nothing else is normalised:
+# every word of the action, the playbook heading and the THEN commands is still
+# compared byte for byte.
+norm53() { # <root-to-blank> — reads stdin
+  sed -e "s|/private$1|@ROOT@|g" -e "s|$1|@ROOT@|g"
+}
+cp -R "$REPO_ROOT/skills" "$BASE53/skills"
+if git -C "$REPO_ROOT" show main:skills/lcars-eeh/ech.sh >"$BASE53/skills/lcars-eeh/ech.sh" 2>/dev/null; then
+  R534="$(new_repo)"; ap_init "$R534"; new_mission "$R534" u-534 verify
+  lc_record "$R534" u-534 pass
+  for pair in "high:merge" "medium:merge+follow-ups"; do
+    pv="${pair%%:*}"; pexp="${pair##*:}"
+    agree_now="$(ech "$R534" policy --mission u-534 --verdict "$pv" --live-check pass 2>&1 | norm53 "$REPO_ROOT")"
+    agree_base="$(ech_at "$BASE53/skills/lcars-eeh/ech.sh" "$R534" policy --mission u-534 --verdict "$pv" --live-check pass 2>&1 | norm53 "$BASE53")"
+    check "AGREEMENT ($pv + a recorded pass) still answers $pexp" \
+      "[ \"\$(printf '%s\n' \"\$agree_now\" | sed -n 's/^ACTION: //p')\" = '$pexp' ]"
+    check "...and that whole output is byte-identical to shipped \`main\`" \
+      "[ \"\$agree_now\" = \"\$agree_base\" ]"
+    if [ "$agree_now" != "$agree_base" ]; then
+      printf '       --- baseline ---\n%s\n       --- now ---\n%s\n' "$agree_base" "$agree_now"
+    fi
+  done
+  # The `bugs` row agrees too, and it is the row that SENDS BACK — so the cure
+  # cannot have turned "the live check found bugs" into a refusal.
+  R535="$(new_repo)"; ap_init "$R535"; new_mission "$R535" u-535 verify
+  lc_record "$R535" u-535 bugs
+  sb_now="$(ech "$R535" policy --mission u-535 --verdict high --live-check bugs 2>&1 | norm53 "$REPO_ROOT")"
+  sb_base="$(ech_at "$BASE53/skills/lcars-eeh/ech.sh" "$R535" policy --mission u-535 --verdict high --live-check bugs 2>&1 | norm53 "$BASE53")"
+  check "AGREEMENT on \`bugs\` still answers send-back" \
+    "[ \"\$(printf '%s\n' \"\$sb_now\" | sed -n 's/^ACTION: //p')\" = 'send-back' ]"
+  check "...and that output is byte-identical to shipped \`main\` too" \
+    "[ \"\$sb_now\" = \"\$sb_base\" ]"
+  if [ "$sb_now" != "$sb_base" ]; then
+    printf '       --- baseline ---\n%s\n       --- now ---\n%s\n' "$sb_base" "$sb_now"
+  fi
+else
+  bad "could not read the baseline ech.sh from main (git show failed)"
+fi
+
+# --- NO MISSION: A CHECK THAT CANNOT BE LOOKED UP IS NOT A CHECK THAT FAILED
+# `policy` takes no mission at all (the table-reading use: `--verdict high
+# --live-check pass` with nothing named), and in that shape there is nothing to
+# look up — its own THEN lines print the literal `<mission>` placeholder, so it
+# is advice and cannot be acted on without substituting an id. REFUSING IT
+# WOULD BE THE WRONG CURE: it would retire a legitimate reading of the table.
+# But it must not read as VERIFIED either. This is the S351 D2 precedent
+# exactly — an untimeable delegate is REPORTED with what is not known, never
+# collapsed into all-quiet — so the action still prints and carries an explicit
+# statement that NOTHING was looked up, plus the command that gives a checked
+# answer.
+R536="$(new_repo)"; ap_init "$R536"; new_mission "$R536" u-536 verify
+P536="$(ech "$R536" policy --verdict high --live-check pass 2>&1)"; p536rc=$?
+check "with NO --mission the table reading still works (exit 0)" "[ $p536rc -eq 0 ]"
+check "...and still prints exactly one action" \
+  "[ \"\$(printf '%s\n' \"\$P536\" | grep -c '^ACTION: ')\" = 1 ]"
+check "...but says plainly that NOTHING was looked up — it is not a verified answer" \
+  "printf '%s' \"\$P536\" | grep -q '^UNVERIFIED: '"
+check "...and names --mission as what makes it checkable" \
+  "printf '%s' \"\$P536\" | grep -qF -- '--mission'"
+check "the no-mission caveat does NOT claim a live check passed" \
+  "! printf '%s' \"\$P536\" | grep -qi 'unverified.*passed'"
+check "a MISSION-NAMED, agreeing call carries NO unverified caveat (so it is not printed always)" \
+  "! printf '%s' \"\$(ech '$R534' policy --mission u-534 --verdict high --live-check pass 2>&1)\" | grep -q '^UNVERIFIED: '"
+
+printf '\n== S353/2. `next` — the verb the LOOP runs — notices a quiet or blocked delegate ==\n'
+
+# BOTH DIRECTIONS, because without both you cannot tell a working guard from a
+# disabled one: byte-identical with NO delegate, and surfaced with one.
+# And it reads THE SAME ROWS `stalled` does — `delegate_beat_rows` is the one
+# producer of an opinion about silence, and a second one is the defect S147,
+# S156 and S188 each burned rounds on.
+# DECLARED BEFORE THE BRANCH, because two assertions below the `if` read it and
+# this suite runs under `set -u`: an unset fixture path must not turn a missing
+# baseline into a parse-time crash of the whole suite.
+R538=""
+mk_silent_delegate() { # <repo> <unit> → the delegate id on stdout
+  local repo="$1" unit="$2"
+  ech "$repo" tier "$unit" --tier T1 --why "one owner end to end" >/dev/null 2>&1
+  ech "$repo" delegate "$unit" >/dev/null 2>&1
+  python3 - "$repo/.git/lcars/autopilot.json" <<'MKSIL'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+for v in (d.get("delegates") or {}).values():
+    v["lastBeatAt"] = 1700000000
+json.dump(d, open(f, "w"), indent=2)
+MKSIL
+  python3 - "$repo/.git/lcars/autopilot.json" <<'MKID'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ks = sorted((d.get("delegates") or {}))
+print(ks[0] if ks else "")
+MKID
+}
+
+if [ -f "$BASE53/skills/lcars-eeh/ech.sh" ]; then
+  # --- DIRECTION A: NO DELEGATE → BYTE-IDENTICAL TO SHIPPED `main` ---------
+  R537="$(new_repo)"; ap_init "$R537"; new_mission "$R537" u-537 implement
+  python3 - "$R537/.git/lcars/autopilot.json" <<'S537PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["missions"] = {"M0": {"id": "u-537"}}
+json.dump(d, open(f, "w"), indent=2)
+S537PY
+  check "[control] this fixture really has no delegates" \
+    "[ -z \"\$(apj '$R537' delegates)\" ]"
+  for nverb in "next" "next --all"; do
+    # shellcheck disable=SC2086
+    nd_now="$(ech "$R537" $nverb 2>&1 | sed -e "s|$REPO_ROOT|@ROOT@|g" -e 's/[0-9]\{10\}/@EPOCH@/g')"
+    nd_base="$(ech_at "$BASE53/skills/lcars-eeh/ech.sh" "$R537" $nverb 2>&1 | sed -e "s|$BASE53|@ROOT@|g" -e 's/[0-9]\{10\}/@EPOCH@/g')"
+    check "\`$nverb\` with NO delegate is byte-identical to shipped \`main\`" \
+      "[ \"\$nd_now\" = \"\$nd_base\" ]"
+    if [ "$nd_now" != "$nd_base" ]; then
+      printf '       --- baseline ---\n%s\n       --- now ---\n%s\n' "$nd_base" "$nd_now"
+    fi
+  done
+  check "[control] that \`next\` really did report something (not two empty strings)" \
+    "printf '%s' \"\$(ech '$R537' next 2>&1)\" | grep -q '^NEXT: '"
+  check "and the no-delegate \`next\` output mentions no delegate at all" \
+    "! printf '%s' \"\$(ech '$R537' next --all 2>&1)\" | grep -qi 'delegate'"
+
+  # --- DIRECTION B: A SILENT DELEGATE → `next` SAYS SO --------------------
+  R538="$(new_repo)"; ap_init "$R538"; new_mission "$R538" u-538 implement
+  python3 - "$R538/.git/lcars/autopilot.json" <<'S538PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["missions"] = {"M0": {"id": "u-538"}}
+json.dump(d, open(f, "w"), indent=2)
+S538PY
+  d538="$(mk_silent_delegate "$R538" u-538)"
+  check "[control] the fixture really has a delegate" "[ -n \"\$d538\" ]"
+  check "[control] and \`stalled\` agrees it is silent (the same rows, one producer)" \
+    "printf '%s' \"\$(ech '$R538' stalled 2>&1)\" | grep -q 'SILENT DELEGATE'"
+  N538="$(ech "$R538" next 2>&1)"
+  check "\`next\` SURFACES the silent delegate by id" \
+    "printf '%s' \"\$N538\" | grep -q \"\$d538\""
+  check "...and says what it is — gone quiet" \
+    "printf '%s' \"\$N538\" | grep -qi 'quiet'"
+  check "...and POINTS AT THE VERB that handles it" \
+    "printf '%s' \"\$N538\" | grep -q 'stalled'"
+  check "...and still prints the one NEXT step (the delegate does not replace it)" \
+    "printf '%s' \"\$N538\" | grep -q '^NEXT: '"
+  check "...and the silent line is NOT what a seat reads as its next step" \
+    "printf '%s' \"\$N538\" | grep -qi 'not your NEXT step'"
+  # THE DIFFERENCE IS EXACTLY THE ADDITION, nothing else moved: strip the block
+  # and the output is the shipped one again.
+  nb538="$(ech_at "$BASE53/skills/lcars-eeh/ech.sh" "$R538" next 2>&1 | sed "s|$BASE53|@ROOT@|g")"
+  n538s="$(printf '%s\n' "$N538" | sed "s|$REPO_ROOT|@ROOT@|g" | grep -vE '^(DELEGATE |  → |$)')"
+  check "with the delegate block removed, \`next\` is the shipped output again" \
+    "[ \"\$n538s\" = \"\$nb538\" ]"
+  if [ "$n538s" != "$nb538" ]; then
+    printf '       --- baseline ---\n%s\n       --- now, block stripped ---\n%s\n' "$nb538" "$n538s"
+  fi
+
+  # --- DIRECTION C: A BLOCKED DELEGATE → `next` SAYS SO ------------------
+  # A beat whose line opens BLOCKED is the delegate's ONE channel to the
+  # hologram. S352 made `stalled` report it the moment it is recorded rather
+  # than after half an hour of silence; `next` must not re-open that latency.
+  R539="$(new_repo)"; ap_init "$R539"; new_mission "$R539" u-539 implement
+  python3 - "$R539/.git/lcars/autopilot.json" <<'S539PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["missions"] = {"M0": {"id": "u-539"}}
+json.dump(d, open(f, "w"), indent=2)
+S539PY
+  ech "$R539" tier u-539 --tier T1 --why "one owner end to end" >/dev/null 2>&1
+  ech "$R539" delegate u-539 >/dev/null 2>&1
+  d539="$(python3 - "$R539/.git/lcars/autopilot.json" <<'S539ID'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ks = sorted((d.get("delegates") or {}))
+print(ks[0] if ks else "")
+S539ID
+)"
+  check "[control] the blocked fixture really has a delegate" "[ -n \"\$d539\" ]"
+  ech "$R539" beat "$d539" "BLOCKED: the staging token is expired, I cannot verify" >/dev/null 2>&1
+  check "[control] and \`stalled\` reports it as BLOCKED (not silent — it just spoke)" \
+    "printf '%s' \"\$(ech '$R539' stalled 2>&1)\" | grep -q 'BLOCKED DELEGATE'"
+  N539="$(ech "$R539" next 2>&1)"
+  check "\`next\` SURFACES the blocked delegate by id" \
+    "printf '%s' \"\$N539\" | grep -q \"\$d539\""
+  check "...and quotes what it is blocked on" \
+    "printf '%s' \"\$N539\" | grep -q 'staging token'"
+  check "...and says BLOCK, not silence (it is the opposite fact — the delegate spoke)" \
+    "printf '%s' \"\$N539\" | grep -qi 'block'"
+  check "...and does not call a delegate that just spoke quiet" \
+    "! printf '%s' \"\$N539\" | grep -qi 'gone quiet'"
+  check "...and still prints the one NEXT step" \
+    "printf '%s' \"\$N539\" | grep -q '^NEXT: '"
+
+  # --- DIRECTION D: A DELEGATE THAT IS NEITHER SILENT NOR BLOCKED --------
+  # The guard is CONDITIONAL on the delegate's state, not merely on a delegate
+  # existing — otherwise every healthy run grows a banner nobody needs.
+  R540="$(new_repo)"; ap_init "$R540"; new_mission "$R540" u-540 implement
+  python3 - "$R540/.git/lcars/autopilot.json" <<'S540PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d["missions"] = {"M0": {"id": "u-540"}}
+json.dump(d, open(f, "w"), indent=2)
+S540PY
+  ech "$R540" tier u-540 --tier T1 --why "one owner end to end" >/dev/null 2>&1
+  ech "$R540" delegate u-540 >/dev/null 2>&1
+  d540="$(python3 - "$R540/.git/lcars/autopilot.json" <<'S540ID'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ks = sorted((d.get("delegates") or {}))
+print(ks[0] if ks else "")
+S540ID
+)"
+  ech "$R540" beat "$d540" "wrote the failing test, now making it pass" >/dev/null 2>&1
+  check "[control] a freshly-beating delegate is NOT reported by \`stalled\`" \
+    "! printf '%s' \"\$(ech '$R540' stalled 2>&1)\" | grep -qE 'SILENT DELEGATE|BLOCKED DELEGATE|UNTIMEABLE DELEGATE'"
+  nh_now="$(ech "$R540" next --all 2>&1 | sed -e "s|$REPO_ROOT|@ROOT@|g" -e 's/[0-9]\{10\}/@EPOCH@/g')"
+  nh_base="$(ech_at "$BASE53/skills/lcars-eeh/ech.sh" "$R540" next --all 2>&1 | sed -e "s|$BASE53|@ROOT@|g" -e 's/[0-9]\{10\}/@EPOCH@/g')"
+  check "a HEALTHY delegate leaves \`next --all\` byte-identical to shipped \`main\` too" \
+    "[ \"\$nh_now\" = \"\$nh_base\" ]"
+  if [ "$nh_now" != "$nh_base" ]; then
+    printf '       --- baseline ---\n%s\n       --- now ---\n%s\n' "$nh_base" "$nh_now"
+  fi
+else
+  bad "no baseline driver for S353/2 (git show main:… failed)"
+fi
+
+# AND THE ROW CONTRACT IS HONOURED BY THE NEW READER TOO (S352 fix round 2,
+# Item 2). `next`'s reader is a FOURTH reader of `delegate_beat_rows`; the
+# build-time guard above counts the readers, so this states the expectation
+# directly rather than leaving it to a `-ge 3`.
+check "\`next\`'s delegate reader binds every declared column plus a named remainder" \
+  "[ \"\$(python3 '$ROWGUARD' '$SCRIPT' | sed -n 's/.*READERS=\([0-9]*\).*/\1/p')\" -ge 4 ]"
+check "and it emits no column-drift complaint at runtime" \
+  "[ -z \"\$(ech '$R538' next 2>&1 >/dev/null | grep -i 'DELEGATE_ROW_COLS')\" ]"
 
 printf '\n== ZERO SPEND ==\n'
 

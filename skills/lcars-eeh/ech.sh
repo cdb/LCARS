@@ -2915,6 +2915,14 @@ cmd_next() {
   # A STOP THE NEW BUILD HAS CURED MUST NOT PARK THE LOOP'S FIRST VERB (S305).
   # The same function `preflight` runs — see `withdraw_obsolete`.
   withdraw_obsolete
+  # A SILENT OR BLOCKED DELEGATE IS NOTICED BY THE VERB THE LOOP ACTUALLY RUNS
+  # (S353). It is said HERE, above every branch, because `next`'s `wait` branch
+  # returns early — and "every milestone has a driver in flight" is precisely
+  # the state in which a quiet delegate is the only thing left to notice. It
+  # prints nothing at all when no delegate needs attention, which is what keeps
+  # this screen byte-identical to the shipped one on a healthy run. See
+  # `delegate_attention_say`; `build_plan` still owns the one `NEXT:` line.
+  delegate_attention_say
   local all=0
   [ "${1:-}" = "--all" ] && all=1
   local plan; plan="$(build_plan)" || return $?
@@ -5265,6 +5273,67 @@ cmd_policy() {
     *)  die "policy: '$live' is not a live-check verdict — pass or bugs." ;;
   esac
 
+  # ==========================================================================
+  # S353 — `--live-check` IS A REPORT, AND A REPORT IS NOT A VERDICT
+  # ==========================================================================
+  # MEASURED, with the record already on disk:
+  #
+  #   lcars-ech live-check done M2 --verdict bugs   # recorded: bugs, "no green claim"
+  #   lcars-ech policy --mission M2 --verdict high --live-check pass
+  #   ACTION: merge
+  #   WHY: Number One says high and the live check passed.
+  #
+  # — and it answered `merge` when NO live check had ever been run at all. So a
+  # hologram that trusted a delegate's cheerful "all green" and typed
+  # `--live-check pass` reached a merge on nothing but a sentence. S350-S352
+  # made delegates REAL, which made that the last surviving route by which a
+  # delegate's WORD could land unverified work.
+  #
+  # THE PRODUCER ALREADY WROTE THE FACT DOWN, so this reads it rather than
+  # inventing a second record: `live-check` (prepare) initialises
+  # `liveChecks.<m>.verdict` to "", and `live-check done <m> --verdict pass|bugs`
+  # is what fills it. Nothing new is stored and nothing is inferred — the same
+  # doctrine as `delegate_beat_rows`: ONE producer of a fact, every reader reads
+  # IT.
+  #
+  # WHY A DISAGREEMENT REFUSES RATHER THAN ACTING ON THE RECORD AND SAYING SO
+  # LOUDLY. Acting on the record is safe in exactly one direction. A recorded
+  # `bugs` with `pass` typed would be answered send-back — safe. A recorded
+  # `pass` with `bugs` typed would be answered MERGE — a merge-shaped action
+  # nobody asked for, reached against the operator's own stated observation,
+  # which is a worse failure than the one being cured. A refusal is the only
+  # answer that is safe BOTH ways, it is the voice this function's own
+  # neighbours already use for an unjustified decision ("an override with no
+  # evidence on disk is a shrug"), and a disagreement is never a legitimate
+  # state: either the record is stale (run `live-check done` again) or the flag
+  # is somebody's word (go and look). Both need a human to act, not an action.
+  #
+  # AN UNRECORDED VERDICT REFUSES FOR THE SAME REASON, and it is NOT a special
+  # case bolted on: the designed order already is record-then-decide. `live-check
+  # done`'s own last line says `NEXT: policy --mission <m> --live-check pass`,
+  # and `next`'s verify-gate block says "record both verdicts … then run
+  # policy". A `policy` call that arrives before the record is a step taken out
+  # of order.
+  #
+  # AND ONLY WITH A MISSION TO LOOK UP. `policy` legitimately takes no mission
+  # (the table reading: `--verdict high --live-check pass`), and in that shape
+  # its own THEN lines print the literal `<mission>` placeholder, so it is
+  # advice that cannot be acted on without substituting an id. Refusing it would
+  # retire a real use. But it must not read as VERIFIED either — that is exactly
+  # S351's D2 precedent, where a delegate whose clock could not be read was
+  # being collapsed into all-quiet: a fact that cannot be looked up is NOT the
+  # same fact as a check that failed, and it is REPORTED as what is not known.
+  # See the `UNVERIFIED:` line below.
+  if [ -n "$mission" ]; then
+    local recorded; recorded="$(ap_j "liveChecks.$mission.verdict")"
+    if [ -z "$recorded" ]; then
+      die "policy: NO live check is recorded for $mission, so \`--live-check $live\` is a claim with nothing behind it — and this verb will not reach a merge on a sentence. A REPORT IS NOT A VERDICT: if a delegate (or anyone) told you it was green, that is the report; the record is what decides. Look yourself, then record it: \`$SELF_CMD live-check $mission --type <types>\`, and when you have BOTH verdicts (target and known-fail control) \`$SELF_CMD live-check done $mission --verdict pass|bugs\`. Re-run this command after that. Nothing was decided and nothing was recorded."
+    fi
+    if [ "$recorded" != "$live" ]; then
+      die "policy: you typed \`--live-check $live\` and the record for $mission says '$recorded' — they disagree, so nothing is decided here. A REPORT IS NOT A VERDICT: this verb reads \`liveChecks.$mission.verdict\`, which only \`live-check done\` writes, and it will not act on either value while they contradict each other (acting on the record would answer MERGE for a recorded 'pass' you had just told it was 'bugs'). One of two things is true: the record is stale, so look again and re-record it with \`$SELF_CMD live-check done $mission --verdict pass|bugs\`; or the flag is somebody's word, in which case '$recorded' already stands and you need no flag to contradict it."
+    fi
+  fi
+
   # S240 — NUMBER ONE NOW RECOMMENDS AN ACTION, so on the `pass` branch that
   # recommendation IS the answer and this table stops re-deriving it by hand
   # (doing it by hand on every look is the defect S240 closed). It is read only
@@ -5308,6 +5377,15 @@ cmd_policy() {
     [ -e "$ev" ] || die "policy: the --evidence path does not exist: $evidence. Write the live check that justifies the override first (that is the whole point of recording it)."
   fi
 
+  # THE NO-MISSION CAVEAT (S353), AND IT IS SAID BEFORE THE ACTION. With no
+  # `--mission` there is nothing to look up, so the action below is a reading of
+  # the table and NOT a checked answer — and a reading that is silent about what
+  # it did not check is the all-quiet false green S351's D2 closed one lane over.
+  # It is CONDITIONAL: a mission-named call has been checked against the record
+  # above, so it carries no caveat.
+  if [ -z "$mission" ]; then
+    say "UNVERIFIED: no --mission was named, so NOTHING was looked up — not the live-check record and not Number One's own verdict file. This is the table's answer for the pair you typed, not a checked one. For a decision you can act on, name the mission: \`$SELF_CMD policy --mission <mission-id> --live-check pass|bugs\`, which reads the recorded live-check verdict and refuses if it disagrees."
+  fi
   say "ACTION: $action"
   say "WHY: $why"
   say "PLAYBOOK: $(policy_heading "$action")"
@@ -7731,6 +7809,79 @@ limit_brief_said() {
   else
     printf '%ss' "${1:-0}"
   fi
+}
+
+# ==========================================================================
+# delegate_attention_say — THE LOOP'S OWN VERB NOTICES A QUIET DELEGATE (S353)
+# ==========================================================================
+# S351 and S352 taught FOUR surfaces to notice a delegate that has gone quiet —
+# `stalled`, `watch`, `status` and the hourly heartbeat — AND NOT `next`, which
+# is the verb the hologram drives its loop on and asks at every single step. So
+# a silent delegate was caught by an hourly TIMER rather than by the question
+# the hologram asks all night: what is the one next thing to do? An escalation
+# channel whose latency is set by a cron entry is not the channel it looks like.
+#
+# IT IS NOT A SECOND OPINION ABOUT SILENCE. It reads `delegate_beat_rows` — the
+# ONE producer of that fact, exactly as `stalled`, `watch`, `status` and the
+# heartbeat do, and for the measured reason that code which works a fact out by
+# reading finished text is the class of defect S147, S156 and S188 each burned
+# rounds on. Every lane below is the producer's own column: `blocked`, `silent`
+# and `basis`.
+#
+# AND IT IS CONDITIONAL, WHICH IS WHAT MAKES IT CHEAP AND SAFE. With no
+# delegate — or with every delegate beating normally — this function prints
+# NOTHING AT ALL, so `next`'s output is byte-identical to the shipped one. That
+# is not an optimisation: `next` is the most-read screen in the mode and a
+# banner on every healthy run is a banner the hologram learns to skip.
+#
+# IT IS A BANNER, NOT THE PLAN. `build_plan` owns the one `NEXT:` line and is
+# deliberately untouched, so this block states the fact, points at the verb that
+# OWNS the cure (`stalled`, which carries the three actions per lane), and says
+# plainly that it is not the next step — the one step still follows below it.
+# Repeating `stalled`'s full three-action prescription here would be the second
+# copy of a rule that this file's own doctrine says drifts.
+delegate_attention_say() {
+  local tab; tab="$(printf '\t')"
+  local n=0
+  local adid aunit atier astat amis aelapsed abasis asilent asince
+  local alimit alimitsrc ablocked aline aextra
+  while IFS="$tab" read -r adid aunit atier astat amis aelapsed abasis asilent asince alimit alimitsrc ablocked aline aextra; do
+    [ -n "${adid:-}" ] || continue
+    # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
+    delegate_row_extra delegate_attention_say "${aextra:-}"
+    if [ "${ablocked:-0}" = "1" ]; then
+      # A BLOCK IS THE OPPOSITE FACT TO A SILENCE — the delegate SPOKE, and said
+      # the one thing it most needed to. Reported the moment it is recorded,
+      # quiet or not, same as `stalled`'s own blocked lane.
+      n=$((n + 1))
+      say "DELEGATE BLOCKED: $adid (unit $aunit, tier $atier) has RAISED A BLOCK through its beat and is waiting on YOU, not on the captain: \"$aline\""
+      continue
+    fi
+    [ "${asilent:-0}" = "1" ] || continue
+    n=$((n + 1))
+    case "$abasis" in
+      broken|future|none)
+        # AN UNTIMEABLE DELEGATE STATES WHAT IS NOT KNOWN (S351 fix round 1,
+        # D2) rather than a number it does not have — and it is certainly not
+        # all-quiet.
+        say "DELEGATE UNTIMEABLE: $adid (unit $aunit, tier $atier, status $astat) — its recorded clock CANNOT BE READ ($abasis), so how long it has been going is NOT KNOWN. This is not all-quiet." ;;
+      mint)
+        say "DELEGATE QUIET: $adid (unit $aunit, tier $atier) has NEVER beat, and it was minted $((aelapsed / 60))m ago, against a limit of $(beat_limit_said). Assume it never started." ;;
+      *)
+        if [ -z "$aline" ]; then
+          say "DELEGATE QUIET: $adid (unit $aunit, tier $atier) has gone quiet — no beat for $((aelapsed / 60))m, against a limit of $(beat_limit_said), and no beat was ever recorded behind its clock."
+        else
+          say "DELEGATE QUIET: $adid (unit $aunit, tier $atier) has gone quiet — no beat for $((aelapsed / 60))m, against a limit of $(beat_limit_said). Its last words: \"$aline\""
+        fi ;;
+    esac
+  done <<DELEGATE_ATTENTION_EOF
+$(delegate_beat_rows)
+DELEGATE_ATTENTION_EOF
+  [ "$n" -gt 0 ] || return 0
+  say "  → the lane that OWNS this: \`$SELF_CMD stalled\` — it prints the three things to pick from for each line above, with this delegate's own ids already substituted in, and \`$SELF_CMD delegates\` lists every delegate in this repo."
+  say "  → that is a delegate of yours and it is NOT your NEXT step: the one step follows, and a delegate waiting on you does not park the work on every other milestone."
+  say ""
+  return 0
 }
 
 # ==========================================================================
