@@ -30,6 +30,7 @@
 #   ech.sh init --spec <path|url> [--scope M0,M1] [--engine copilot]
 #                     [--deadline <iso>] [--force]
 #   ech.sh status
+#   ech.sh usage <read|gate|config|help> [options]
 #   ech.sh next [--all]
 #   ech.sh await [--limit <secs>]
 #   ech.sh watch [start|stop|status]
@@ -132,6 +133,7 @@ XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILLS_DIR/lcars-xo/xo.sh}"
 RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILLS_DIR/lcars-respond/respond.sh}"
 LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILLS_DIR/lcars-log/log.sh}"
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILLS_DIR/lcars-run/notify.sh}"
+USAGE_SCRIPT="$SKILLS_DIR/lcars-usage/usage.sh"
 
 die()  { printf 'lcars ech: %s\n' "$1" >&2; exit "${2:-1}"; }
 say()  { printf '%s\n' "$1"; }
@@ -173,6 +175,9 @@ usage() {
                        proceeds on, or stops deliberately (exit 10) on the one
                        prerequisite nobody can default — nowhere to push
   status               one screen: scope, stages, gates, slots, EVERY open question, next action
+  usage <read|gate|config|help> [options]
+                       the product Claude allowance reader, from any cwd;
+                       gate exits 0 GO / 2 HOLD / 3 ASK / 4 UNKNOWN / 64 bad input
   next [--all]         the ONE next mechanical step, and the HOLOGRAM-COMMAND-MODE.md heading for it
   await [--limit <s>]  block until a parallel slot frees, watching the RECORDED driver
                        PROCESSES. Returns 0 on a free slot, 124 when the bound passes
@@ -273,6 +278,13 @@ EXIT CODES: 0 ok | 10 a question for the captain was recorded in .questions | 11
 USAGE
   exit 1
 }
+
+# Account allowance is independent of the current repo's ECH installation.
+if [ "${1:-}" = usage ]; then
+  shift
+  [ -r "$USAGE_SCRIPT" ] || die "usage reader is missing or unreadable at $USAGE_SCRIPT — re-run ./install.sh from a complete LCARS clone." 64
+  exec bash "$USAGE_SCRIPT" "$@"
+fi
 
 # --- where we are ---------------------------------------------------------
 CWD="${LCARS_ECH_CWD:-$PWD}"
