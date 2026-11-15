@@ -136,6 +136,23 @@ NOTIFY_BIN="${LCARS_NOTIFY:-$SKILLS_DIR/lcars-run/notify.sh}"
 die()  { printf 'lcars ech: %s\n' "$1" >&2; exit "${2:-1}"; }
 say()  { printf '%s\n' "$1"; }
 
+# One implementation for shell diagnostics and embedded Python report readers.
+# TAB is escaped too; only the report's own separators may remain controls.
+REPORT_TEXT_SAFE_PY='
+def report_text_safe(text):
+    escapes = {8: r"\b", 9: r"\t", 10: r"\n", 12: r"\f", 13: r"\r"}
+    escapes.update({0xdc00 + code: r"\x%02x" % code for code in range(128, 160)})
+    return "".join(escapes.get(ord(c), r"\x%02x" % ord(c))
+                   if ord(c) < 32 or 127 <= ord(c) <= 159 or ord(c) in escapes else c for c in text)
+'
+report_text_safe() {
+  "$PY" -c "$REPORT_TEXT_SAFE_PY
+import sys
+text = sys.stdin.buffer.read().decode('utf-8', 'surrogateescape')
+sys.stdout.buffer.write(report_text_safe(text).encode('utf-8', 'surrogateescape'))
+"
+}
+
 # The cheat sheet. The modelled run's two biggest token sinks were reading LCARS
 # internals to find a verb's real flags, and long log greps. Both are answered
 # here, on purpose, so nobody has to go and read run.sh to drive a mission.
@@ -186,13 +203,15 @@ usage() {
                        the Mission's stage nor its verdict: nothing advances on a
                        delegate's word, and your own live check still runs
   delegates            id, unit, tier, status for every delegate in this repo
-  beat <delegate-id> "<one line of progress>"
+  beat <delegate-id> "<one line of progress>" [--step K/N]
                        the delegate says WHERE IT GOT TO. One beat per step. It
                        APPENDS (a beat never destroys an earlier one) and moves
                        lastBeatAt, which is the ONLY clock the ECH has on a delegate:
                        go longer than LCARS_ECH_BEAT_LIMIT (1800s) without one and
                        `stalled` names it SILENT, with its unit, its tier and what to
-                       do about it. It is not a verdict and it advances nothing
+                       do about it. Optional --step K/N also proves MOTION: repeated
+                       steps trigger a not-moving report after 3 beats (override:
+                       LCARS_ECH_STEP_STALL_BEATS). It is not a verdict and advances nothing
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
   ask "<what>" --mission <m> [--why <w>] [--command <c>] [--rollback <r>]
                        raise a question YOURSELF (a product call, a scope change, a
@@ -936,8 +955,33 @@ if [ -n "${LCARS_ECH_BEAT_LIMIT+set}" ]; then
   esac
 fi
 if [ -n "$BEAT_LIMIT_BAD" ]; then
+  BEAT_LIMIT_WHY="$(printf '%s' "$BEAT_LIMIT_WHY" | report_text_safe)"
   printf 'lcars ech: WARNING — LCARS_ECH_BEAT_LIMIT %s. IT WAS NOT APPLIED: the documented %ss default is in force instead, so every delegate is still measured at a known limit and every report that does not read this limit is untouched. This is a WARNING and not a refusal because the first version of this check WAS a refusal, and it silenced a failed-mission report in a repo with no delegates at all. Unset it for %ss, or set it to seconds (e.g. 3600).\n' \
     "$BEAT_LIMIT_WHY" "$BEAT_LIMIT_DEFAULT" "$BEAT_LIMIT_DEFAULT" >&2
+fi
+
+STEP_STALL_BEATS_DEFAULT=3
+STEP_STALL_BEATS_CEILING=1000
+STEP_STALL_BEATS="${LCARS_ECH_STEP_STALL_BEATS:-3}"
+STEP_STALL_BEATS_RAW="${LCARS_ECH_STEP_STALL_BEATS-}"
+STEP_STALL_BEATS_BAD=""
+if [ -n "${LCARS_ECH_STEP_STALL_BEATS+set}" ]; then
+  case "$STEP_STALL_BEATS_RAW" in
+    ''|*[!0-9]*) STEP_STALL_BEATS_BAD=1 ;;
+    *)
+      if [ "${#STEP_STALL_BEATS_RAW}" -gt 4 ] \
+        || [ "$STEP_STALL_BEATS_RAW" -lt 2 ] \
+        || [ "$STEP_STALL_BEATS_RAW" -gt "$STEP_STALL_BEATS_CEILING" ]; then
+        STEP_STALL_BEATS_BAD=1
+      else
+        STEP_STALL_BEATS="$((10#$STEP_STALL_BEATS_RAW))"
+      fi ;;
+  esac
+fi
+if [ -n "$STEP_STALL_BEATS_BAD" ]; then
+  STEP_STALL_BEATS="$STEP_STALL_BEATS_DEFAULT"
+  printf "lcars ech: WARNING — LCARS_ECH_STEP_STALL_BEATS '%s' was REJECTED: use a whole number from 2 to %s. The documented %s-beat DEFAULT is in force instead; unrelated reports are untouched. Unset it for the default or set it to a legal beat count.\n" \
+    "$(printf '%s' "$STEP_STALL_BEATS_RAW" | report_text_safe)" "$STEP_STALL_BEATS_CEILING" "$STEP_STALL_BEATS_DEFAULT" >&2
 fi
 
 # THE SENTINEL for question 2's default. It is a PHRASE, never a command, and it
@@ -3129,7 +3173,7 @@ cmd_watch() {
   # `blocked` and the last words joined by tabs. `wextra` is the guard: it must
   # come back empty, and `delegate_row_extra` says so if it does not.
   local wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wline
-  local wlimit wlimitsrc wblocked wextra
+  local wlimit wlimitsrc wblocked wstep wstepbeats wstepelapsed wnotmoving wextra
   local interval="${LCARS_ECH_WATCH_INTERVAL:-5}"
   case "$interval" in ''|*[!0-9.]*|.*|*.*.*) die "watch: invalid poll interval" ;; esac
   trap '[ -z "$sleeper" ] || { kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; }; exit 0' TERM INT HUP
@@ -3154,7 +3198,7 @@ cmd_watch() {
     # A SILENT DELEGATE IS A WAKE, exactly as a failed-and-idle mission is
     # (S351) — same witness loop, same `event` string, same `watch.log`.
     silents=""
-    while IFS="$wtab" read -r wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wlimit wlimitsrc wblocked wline wextra; do
+    while IFS="$wtab" read -r wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wlimit wlimitsrc wblocked wstep wstepbeats wstepelapsed wnotmoving wline wextra; do
       [ -n "${wdid:-}" ] || continue
       delegate_row_extra cmd_watch "${wextra:-}"
       [ "${wsilent:-0}" = "1" ] || continue
@@ -3521,13 +3565,26 @@ SF_EOF
   # delegate is not one. It also means that with NO delegates recorded this
   # whole block emits nothing at all, which is what keeps the mission report
   # byte-identical to the shipped one.
-  local dn=0 du=0 db=0 did dunit dtier dstat dmis delapsed dbasis dsilent dsince dline
-  local dlimit dlimitsrc duwhy dblocked dextra
-  while IFS="$tab" read -r did dunit dtier dstat dmis delapsed dbasis dsilent dsince dlimit dlimitsrc dblocked dline dextra; do
+  local dn=0 du=0 db=0 dm=0 did dunit dtier dstat dmis delapsed dbasis dsilent dsince dline
+  local dlimit dlimitsrc duwhy dblocked dstep dstepbeats dstepelapsed dnotmoving dstepage dextra
+  while IFS="$tab" read -r did dunit dtier dstat dmis delapsed dbasis dsilent dsince dlimit dlimitsrc dblocked dstep dstepbeats dstepelapsed dnotmoving dline dextra; do
     [ -n "${did:-}" ] || continue
     # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
     delegate_row_extra cmd_stalled "${dextra:-}"
-    # --- THE BLOCKED LANE (S352 fix round 1, D5), AND IT COMES FIRST. A
+    if [ "${dnotmoving:-0}" = "1" ]; then
+      dm=$((dm + 1))
+      if [ "$dstepelapsed" -ge 0 ]; then
+        dstepage="${dstepelapsed}s ($((dstepelapsed / 60))m)"
+      else
+        dstepage="an UNKNOWN duration (the step clock cannot be read)"
+      fi
+      printf 'NOT-MOVING DELEGATE: %s (unit %s, tier %s) — BEATING BUT NOT MOVING at step %s: %s beats without an advance over %s. Threshold applied: %s.\n' \
+        "$did" "$dunit" "$dtier" "$dstep" "$dstepbeats" "$dstepage" "$(step_stall_beats_said)"
+      printf '  → this motion signal is NOT silence: the delegate spoke. It is NOT a verdict. Its last words: "%s"\n' "$dline"
+      printf '  → what to do: RE-BRIEF it with a smaller next step and ask what is holding it there; REPLACE it (`%s delegate close %s`, then `%s delegate %s`); or RAISE a call only the captain owns (`%s ask "<what you need from him>" --mission %s`). Another beat at the same step does NOT clear this line; an advancing --step K/N does.\n' \
+        "$SELF_CMD" "$did" "$SELF_CMD" "$dunit" "$SELF_CMD" "$dmis"
+    fi
+    # --- THE BLOCKED LANE (S352 fix round 1, D5), BEFORE THE SILENCE GATE. A
     # delegate has exactly one channel to the ECH — its beat — so a beat whose
     # line opens `BLOCKED` is an ESCALATION, and an escalation that only
     # surfaces once the delegate has ALSO been quiet for half an hour is a
@@ -3599,9 +3656,7 @@ SF_EOF
         # never-beat lane above already has the sentence that fits this shape.
         printf '  → it has said nothing at all, so there is no "where it got to": its clock has moved but no beat was ever recorded behind it.\n'
       else
-        # ITS LAST WORDS, QUOTED ON ONE LINE. `beat` refuses a multi-line line at
-        # the door and the row producer flattens tabs, so this cannot grow into a
-        # second paragraph that reads like a line of this report.
+        # The row producer escapes controls without changing the stored beat.
         printf '  → its last words, which are where it got to: "%s"\n' "$dline"
       fi
     fi
@@ -3640,6 +3695,9 @@ DELEGATE_SILENCE_EOF
   if [ "$db" -gt 0 ]; then
     printf '%s delegate(s) have RAISED A BLOCK and are waiting on the ECH — that is the escalation channel working, not a fault. Each line above quotes what it needs and names what clears it.\n' \
       "$db"
+  fi
+  if [ "$dm" -gt 0 ]; then
+    printf '%s delegate(s) are beating but not moving — each line above names the next action; this is a motion signal, not a verdict.\n' "$dm"
   fi
   return 0
 }
@@ -6230,8 +6288,8 @@ PY
   { [ "$rc" = 0 ] && [ -n "$seq" ]; } || die "tier: could not write the judgement to $APJSON — NOTHING was recorded, so do not act as though the tier is decided."
 
   say "TIER: $tier for $unit"
-  say "WHY: $why"
-  say "ESTIMATE SHOWN: $est"
+  say "WHY: $(printf '%s' "$why" | report_text_safe)"
+  say "ESTIMATE SHOWN: $(printf '%s' "$est" | report_text_safe)"
   say "  The factory's estimate is an input you were shown, never a floor. A tier that"
   say "  disagrees with it is a legitimate call and the record keeps both, so the"
   say "  disagreement reads later as deliberate."
@@ -7521,8 +7579,9 @@ PY
 cmd_delegates() {
   require_state
   local rows
-  rows="$("$PY" - "$APJSON" <<'PY'
+  rows="$("$PY" - "$APJSON" "$REPORT_TEXT_SAFE_PY" <<'PY'
 import json, sys
+exec(sys.argv[2])
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
@@ -7533,8 +7592,9 @@ for k in sorted((d.get("delegates") or {})):
         continue
     # NO BRIEF COLUMN (D13). The recorded absolute path belongs to the
     # checkout that minted it; the shell resolves the brief for THIS repo.
-    print("%s\t%s\t%s\t%s" % (k, v.get("unit") or "-", v.get("tier") or "-",
-                               v.get("status") or "-"))
+    print("\t".join(report_text_safe(value) for value in
+                   (k, v.get("unit") or "-", v.get("tier") or "-",
+                    v.get("status") or "-")))
 PY
 )"
   if [ -z "$rows" ]; then
@@ -7560,7 +7620,7 @@ PY
     now_tier="$(ap_j "units.$unit.tier")"
     if [ -n "$now_tier" ] && [ "$now_tier" != "$tier" ]; then
       printf '        ⚠ stale: minted at %s, unit is now %s — its brief carries the %s contract\n' \
-        "$tier" "$now_tier" "$tier"
+        "$tier" "$(printf '%s' "$now_tier" | report_text_safe)" "$tier"
     fi
   done <<EOF
 $rows
@@ -7658,7 +7718,7 @@ BEAT_SKEW_GRACE=300
 #     of this source and goes RED if their arities disagree.
 # ADD A COLUMN HERE AND IN THE `row` LITERAL BELOW, and the test will name every
 # reader you have to widen. Nobody has to remember anything.
-DELEGATE_ROW_COLS='id unit tier status mission elapsed basis silent since limit limitsrc blocked lastLine'
+DELEGATE_ROW_COLS='id unit tier status mission elapsed basis silent since limit limitsrc blocked step stepBeats stepElapsed notMoving lastLine'
 
 # delegate_row_extra <reader> <remainder> — THE LOUD HALF of that contract. The
 # remainder must come back EMPTY; a non-empty one means the producer has grown a
@@ -7668,27 +7728,32 @@ DELEGATE_ROW_COLS='id unit tier status mission elapsed basis silent since limit 
 delegate_row_extra() {
   [ -n "${2:-}" ] || return 0
   printf '%s: delegate_beat_rows emitted MORE columns than this reader binds — unbound tail: %s. Widen it and DELEGATE_ROW_COLS (tests/delegation.test.sh S352fix2/1 holds this).\n' \
-    "$1" "$2" >&2
+    "$1" "$(printf '%s' "$2" | report_text_safe)" >&2
   return 0
 }
 delegate_beat_rows() {
   [ -f "$APJSON" ] || return 0
-  "$PY" - "$APJSON" "$(now)" "$BEAT_LIMIT" "$BEAT_SKEW_GRACE" "$DELEGATE_ROW_COLS" <<'PY'
+  "$PY" - "$APJSON" "$(now)" "$BEAT_LIMIT" "$BEAT_SKEW_GRACE" "$DELEGATE_ROW_COLS" "$STEP_STALL_BEATS" "$REPORT_TEXT_SAFE_PY" <<'PY'
 import json, sys
+exec(sys.argv[7])
 f, now, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 grace = int(sys.argv[4])
 cols = sys.argv[5].split()
+step_limit = int(sys.argv[6])
 checked = False
 try:
     d = json.load(open(f))
 except Exception:
     sys.exit(0)
 def flat(v):
-    # TABS AND NEWLINES ARE THE ROW FORMAT. `beat` refuses a multi-line line at
-    # the door, so this is the second line of defence for a hand-edited record.
-    return (v or "").replace("\t", " ").replace("\n", " ")
+    return report_text_safe(v or "")
 def num(x):
     return x if isinstance(x, int) and not isinstance(x, bool) else None
+def step_value(x):
+    if not isinstance(x, dict):
+        return None
+    k, n = num(x.get("k")), num(x.get("n"))
+    return (k, n) if k is not None and n is not None and 1 <= k <= n <= 1000000 else None
 for k in sorted((d.get("delegates") or {})):
     v = (d.get("delegates") or {})[k]
     if not isinstance(v, dict):
@@ -7744,16 +7809,35 @@ for k in sorted((d.get("delegates") or {})):
     blocked = 0
     if status != "done" and last.strip().upper().startswith("BLOCKED"):
         blocked = 1
+    step = step_value(v.get("step"))
+    high, step_beats, step_since = None, 0, None
+    for b in beats:
+        if not isinstance(b, dict) or "step" not in b:
+            continue
+        reported = step_value(b["step"])
+        if reported is None:
+            high, step_beats, step_since = None, 0, None
+            continue
+        step = reported
+        # A new denominator or a backward step is not an advance.
+        if high is None or reported[0] > high:
+            high, step_beats, step_since = reported[0], 1, num(b.get("at"))
+        else:
+            step_beats += 1
+    step_elapsed = -1
+    if step_since is not None and step_since - now <= grace:
+        step_elapsed = max(0, now - step_since)
+    not_moving = int(status != "done" and step_beats >= step_limit)
     # THE ROW CARRIES ITS OWN COLUMN NAMES (S352 fix round 2, Item 2). ONE
     # literal holds both the name and the value of every column, so those two
     # cannot drift from each other, and the names are checked once against the
     # `DELEGATE_ROW_COLS` the shell declared above. A drift is said out loud and
     # the row is STILL PRINTED — emitting nothing would be the all-quiet false
     # green, and a bookkeeping mismatch must never cause one.
-    row = [("id",       k),
+    row = [("id",       report_text_safe(k)),
            ("unit",     flat(v.get("unit")) or "-"),
            ("tier",     flat(v.get("tier")) or "-"),
-           ("status",   status),
+           ("status",   report_text_safe(status)),
            ("mission",  flat(v.get("mission")) or "-"),
            ("elapsed",  str(elapsed)),
            ("basis",    basis),
@@ -7762,6 +7846,10 @@ for k in sorted((d.get("delegates") or {})):
            ("limit",    str(dl)),
            ("limitsrc", dlsrc),
            ("blocked",  str(blocked)),
+           ("step",     "%s/%s" % step if step is not None else "-"),
+           ("stepBeats", str(step_beats)),
+           ("stepElapsed", str(step_elapsed)),
+           ("notMoving", str(not_moving)),
            ("lastLine", flat(last))]
     if not checked:
         checked = True
@@ -7811,6 +7899,14 @@ limit_brief_said() {
   fi
 }
 
+step_stall_beats_said() {
+  printf '%s beats (LCARS_ECH_STEP_STALL_BEATS)' "$STEP_STALL_BEATS"
+  if [ -n "$STEP_STALL_BEATS_BAD" ]; then
+    printf " — the DEFAULT, because LCARS_ECH_STEP_STALL_BEATS '%s' was REJECTED: use a whole number from 2 to %s" \
+      "$(printf '%s' "$STEP_STALL_BEATS_RAW" | report_text_safe)" "$STEP_STALL_BEATS_CEILING"
+  fi
+}
+
 # ==========================================================================
 # delegate_attention_say — THE LOOP'S OWN VERB NOTICES A QUIET DELEGATE (S353)
 # ==========================================================================
@@ -7844,11 +7940,15 @@ delegate_attention_say() {
   local tab; tab="$(printf '\t')"
   local n=0
   local adid aunit atier astat amis aelapsed abasis asilent asince
-  local alimit alimitsrc ablocked aline aextra
-  while IFS="$tab" read -r adid aunit atier astat amis aelapsed abasis asilent asince alimit alimitsrc ablocked aline aextra; do
+  local alimit alimitsrc ablocked astep astepbeats astepelapsed anotmoving aline aextra
+  while IFS="$tab" read -r adid aunit atier astat amis aelapsed abasis asilent asince alimit alimitsrc ablocked astep astepbeats astepelapsed anotmoving aline aextra; do
     [ -n "${adid:-}" ] || continue
     # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
     delegate_row_extra delegate_attention_say "${aextra:-}"
+    if [ "${anotmoving:-0}" = "1" ]; then
+      n=$((n + 1))
+      say "DELEGATE NOT-MOVING: $adid (unit $aunit, tier $atier) is beating but not moving at step $astep: $astepbeats beats without an advance, against a threshold of $(step_stall_beats_said). This is NOT silence and NOT a verdict. Its last words: \"$aline\""
+    fi
     if [ "${ablocked:-0}" = "1" ]; then
       # A BLOCK IS THE OPPOSITE FACT TO A SILENCE — the delegate SPOKE, and said
       # the one thing it most needed to. Reported the moment it is recorded,
@@ -7892,14 +7992,18 @@ DELEGATE_ATTENTION_EOF
 # single-slot version of this record is precisely the defect `.pending` was, and
 # `delegate close`'s own refusal exists for the same reason.
 #
-# IT RECORDS NOTHING ELSE. A beat is not a verdict, not a stage, not a hand-back
-# and not a close. It moves the delegate's clock and nothing more.
+# A beat is not a verdict, a stage, a hand-back or a close. It records the
+# delegate's clock and, optionally, its reported step.
 cmd_beat() {
-  local did="" line="" line_set=0
+  local did="" line="" line_set=0 step="" step_set=0
   while [ $# -gt 0 ]; do
     case "$1" in
+      --step)
+        [ "$step_set" = 0 ] || die "beat: --step was given twice — give ONE K/N step; nothing was recorded."
+        [ $# -ge 2 ] || die "beat: --step '' is not a step — use whole numbers K/N with 1 <= K <= N <= 1000000; nothing was recorded."
+        step="$2"; step_set=1; shift 2 ;;
       -*)
-        die "beat: '$1' is not an argument this verb has, and it will not be ignored. A beat is two things and nothing else: WHICH delegate, and ONE line of what it just did. It carries no verdict and no flags. Usage: \`$SELF_CMD beat <delegate-id> \"<one line of progress>\"\`."
+        die "beat: '$1' is not an argument this verb has, and it will not be ignored. Give WHICH delegate, ONE line of what it just did, and optionally --step K/N. It carries no verdict. Usage: \`$SELF_CMD beat <delegate-id> \"<one line of progress>\" [--step K/N]\`."
         ;;
       *)
         if [ -z "$did" ]; then
@@ -7914,6 +8018,16 @@ cmd_beat() {
   done
   [ -n "$did" ] || die "beat: usage is \`$SELF_CMD beat <delegate-id> \"<one line of progress>\"\` — the delegate id comes first, and the ids come from \`$SELF_CMD delegates\`."
   require_state
+  if [ "$step_set" = 1 ]; then
+    "$PY" - "$step" <<'PY' || die "beat: --step '$step' is not a step — use whole numbers K/N with 1 <= K <= N <= 1000000; nothing was recorded. Do not guess a step."
+import re, sys
+s = sys.argv[1]
+if not re.fullmatch(r"[0-9]{1,7}/[0-9]{1,7}", s):
+    sys.exit(1)
+k, n = map(int, s.split("/"))
+sys.exit(0 if 1 <= k <= n <= 1000000 else 1)
+PY
+  fi
 
   # EVERY REFUSAL HAPPENS BEFORE ANY WRITE (the `tier` rule). A half-recorded
   # beat is worse than none: later it reads as progress somebody actually made.
@@ -7959,9 +8073,9 @@ PY
 
   local at; at="$(now)"
   ap_lock
-  "$PY" - "$APJSON" "$did" "$line" "$at" <<'PY'
+  "$PY" - "$APJSON" "$did" "$line" "$at" "$step" <<'PY'
 import json, os, sys
-f, did, line, at = sys.argv[1:5]
+f, did, line, at, step = sys.argv[1:6]
 d = json.load(open(f))
 ds = d.get("delegates") or {}
 rec = ds.get(did)
@@ -7971,7 +8085,12 @@ beats = rec.get("beats")
 if not isinstance(beats, list):
     beats = []
 # APPEND. Nothing already recorded is touched — the questions-ledger rule.
-beats.append({"at": int(at), "line": line})
+beat = {"at": int(at), "line": line}
+if step:
+    k, n = map(int, step.split("/"))
+    beat["step"] = {"k": k, "n": n}
+    rec["step"] = {"k": k, "n": n, "at": int(at)}
+beats.append(beat)
 rec["beats"] = beats
 # AND THE DERIVED MIRROR, which is what the watchdog compares against now().
 # It is written here, by the producer, and never hand-written: `pending` taught
@@ -8002,7 +8121,7 @@ b = r.get("beats")
 sys.stdout.write(str(len(b)) if isinstance(b, list) else "?")
 PY
 )"
-  say "BEAT recorded: $did (unit $dunit) — \"$line\""
+  say "$(printf '%s' "BEAT recorded: $did (unit $dunit) — \"$line\"" | report_text_safe)"
   say "  beat #$nb at $at. The ledger APPENDS: every earlier beat is still on disk."
   say "  the limit it is held to: $(beat_limit_said). One beat per step is what keeps"
   say "    \`$SELF_CMD stalled\` quiet about $did."
@@ -8012,8 +8131,8 @@ PY
   # caller probably wants is named instead of left to be discovered.
   if [ "$dstatus" = "done" ]; then
     say "NOTE: $did is already CLOSED (status done), so the watchdog was not counting it"
-    say "  quiet and this beat changes no verdict. If there is more work on $dunit that is"
-    say "  a NEW delegate: \`$SELF_CMD delegate $dunit\`."
+    say "$(printf '%s' "  quiet and this beat changes no verdict. If there is more work on $dunit that is" | report_text_safe)"
+    say "$(printf '%s' "  a NEW delegate: \`$SELF_CMD delegate $dunit\`." | report_text_safe)"
   fi
   return 0
 }
@@ -8021,8 +8140,9 @@ PY
 # delegation_status_lines — the two lines `status` gains. Read-only.
 delegation_status_lines() {
   local tiers
-  tiers="$("$PY" - "$APJSON" <<'PY'
+  tiers="$("$PY" - "$APJSON" "$REPORT_TEXT_SAFE_PY" <<'PY'
 import json, sys
+exec(sys.argv[2])
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
@@ -8031,7 +8151,7 @@ out = []
 for k in sorted((d.get("units") or {})):
     v = (d.get("units") or {})[k]
     if isinstance(v, dict) and v.get("tier"):
-        out.append("%s=%s" % (k, v["tier"]))
+        out.append("%s=%s" % (report_text_safe(k), report_text_safe(v["tier"])))
 sys.stdout.write("  ".join(out))
 PY
 )"
@@ -8042,9 +8162,9 @@ PY
   # `stalled` cannot disagree about who is quiet. A third line would have been a
   # second place to look.
   local dl="" stab sid sunit stier sstat smis selapsed sbasis ssilent ssince sline beatsaid
-  local slimit slimitsrc sblocked sextra
+  local slimit slimitsrc sblocked sstep sstepbeats sstepelapsed snotmoving sextra
   stab="$(printf '\t')"
-  while IFS="$stab" read -r sid sunit stier sstat smis selapsed sbasis ssilent ssince slimit slimitsrc sblocked sline sextra; do
+  while IFS="$stab" read -r sid sunit stier sstat smis selapsed sbasis ssilent ssince slimit slimitsrc sblocked sstep sstepbeats sstepelapsed snotmoving sline sextra; do
     [ -n "${sid:-}" ] || continue
     # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
     delegate_row_extra delegation_status_lines "${sextra:-}"
@@ -8078,6 +8198,7 @@ PY
     # ECH opens has to show one. It is additive to SILENT: a delegate can be
     # both, and `stalled` has the words.
     [ "${sblocked:-0}" = "1" ] && beatsaid="$beatsaid BLOCKED"
+    [ "$sstep" = "-" ] || beatsaid="$beatsaid step $sstep"
     dl="${dl:+$dl  }$sid(unit=$sunit tier=$stier $sstat $beatsaid)"
   done <<STATUS_DELEGATES_EOF
 $(delegate_beat_rows)

@@ -200,11 +200,18 @@ one cannot be re-minted, reviewed, or trusted a day later.
 
 ## NO SILENT HOURS — the beat
 
-A delegate **emits one beat per step**, as it finishes it:
+A delegate **declares N**, its total number of checkable steps, before starting
+and **emits one beat per step**, as it finishes it, reporting the current K:
 
 ```bash
-lcars-ech beat <delegate-id> "<one line of what you just did>"
+lcars-ech beat <delegate-id> "<one line of what you just did>" --step K/N
 ```
+
+Why: a beat without a step proves you are alive, not that you are getting anywhere.
+The step is optional for existing callers; without it a beat is unchanged.
+When supplied it must be whole numbers with `1 <= K <= N <= 1000000`; junk
+refuses before anything is recorded. Each reported step stays on its beat in
+the append-only ledger, alongside the latest `delegates.<id>.step = {k, n, at}`.
 
 **Why this exists, and why it is not optional.** `HOLOGRAM-COMMAND-MODE.md` § 8
 carries the single biggest measured defect in this mode: *a wait has a limit, a
@@ -239,6 +246,22 @@ out in the morning.
   against another is told both figures rather than being told one of them as a
   fact.
 
+**BEATING BUT NOT MOVING is a separate signal, not silence and not a verdict.**
+Three step-bearing beats without K advancing trigger it, even inside the silence
+limit. `LCARS_ECH_STEP_STALL_BEATS` overrides that threshold (whole numbers from
+2 to 1000, default 3); one beat cannot show a lack of motion. Only a higher K
+starts a new run: changing N or going backward does not. A beat without a step
+neither claims an advance nor adds an observation to this count; a delegate
+that never reported a step is never judged not-moving, and a `done` delegate
+is never reported. `stalled` names the delegate, unit, tier, current step, beat
+count, duration, applied threshold and last words, then the next action:
+re-brief it with a smaller step, replace it, or raise a captain-owned call.
+An advancing step clears this signal; another pulse at the same step does not.
+The signal has its own tally and survives alongside a silence or BLOCKED signal.
+`status` adds the step to its existing delegates line, `next` banners the
+attention without changing the plan, and the unchanged heartbeat gets it through
+`stalled`.
+
 **A BROKEN LIMIT DEGRADES; IT DOES NOT REFUSE.** A `LCARS_ECH_BEAT_LIMIT` that
 is not a whole number of seconds — `30m` is the one a model types after reading
 the line above — is **not applied**, the documented `1800` is used instead, and
@@ -248,6 +271,9 @@ was one, and in a repo with **no delegates at all** it stopped `lcars-ech
 stalled` reporting a failed mission and took `next`, `status` and `playbook`
 down with it. A limit with nothing to measure must never silence machinery that
 does not read it, and `stalled` always exits 0.
+The motion threshold follows the same discipline: a malformed or out-of-range
+value falls back to 3, warns on stderr and in every motion report that applies
+it, and never silences an unrelated report.
 
 **AND A CLOCK THAT CANNOT BE READ IS REPORTED, NOT SKIPPED.** A delegate whose
 recorded timestamp will not parse, or sits in the future, is **UNTIMEABLE** —

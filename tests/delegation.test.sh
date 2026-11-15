@@ -53,7 +53,11 @@ EEH="${LCARS_EEH_SCRIPT:-$REPO_ROOT/skills/lcars-eeh/eeh.sh}"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+if [ -n "${LCARS_TEST_TMP_ROOT:-}" ]; then
+  TMPROOT="$(mktemp -d "$LCARS_TEST_TMP_ROOT/delegation.XXXXXX")"
+else
+  TMPROOT="$(mktemp -d)"
+fi
 
 teardown() {
   # Nothing here backgrounds a process, but a driver pid recorded by any verb is
@@ -259,6 +263,7 @@ PY
 # MODEL, which is the one confusion that would make these assertions lie.
 eng_col() { printf '%s\n' "$1" | awk -v r="$2" -v c="$3" '$1==r {print $c; exit}'; }
 
+if [ "${LCARS_DELEGATION_FOCUS:-}" != s354 ]; then
 printf '\n== DELEGATION.md — the shared doc ==\n'
 
 DOC="$REPO_ROOT/skills/lcars-eeh/DELEGATION.md"
@@ -2104,8 +2109,9 @@ PY
   # empty strings.
   check "[control] that fixture's \`stalled\` does report the stalled mission" \
     "printf '%s' \"\$(ech '$R61' stalled 2>&1)\" | grep -q 'u-61'"
-  nowst="$(ech "$R61" status 2>&1 | sed "s|$REPO_ROOT|@ROOT@|g" | grep -vE '^  (tiers|delegates):')"
-  basest="$(ech_at "$BASE51/skills/lcars-eeh/ech.sh" "$R61" status 2>&1 | sed "s|$BASE51|@ROOT@|g")"
+  # Checkout-local fixtures contain REPO_ROOT too; normalize both source roots equally.
+  nowst="$(ech "$R61" status 2>&1 | sed -e "s|$BASE51|@ROOT@|g" -e "s|$REPO_ROOT|@ROOT@|g" | grep -vE '^  (tiers|delegates):')"
+  basest="$(ech_at "$BASE51/skills/lcars-eeh/ech.sh" "$R61" status 2>&1 | sed -e "s|$BASE51|@ROOT@|g" -e "s|$REPO_ROOT|@ROOT@|g")"
   check "\`status\` with no delegates is byte-identical to main but for S350's two lines" \
     "[ \"\$nowst\" = \"\$basest\" ]"
   if [ "$nowst" != "$basest" ]; then
@@ -3908,6 +3914,590 @@ check "\`next\`'s delegate reader binds every declared column plus a named remai
   "[ \"\$(python3 '$ROWGUARD' '$SCRIPT' | sed -n 's/.*READERS=\([0-9]*\).*/\1/p')\" -ge 4 ]"
 check "and it emits no column-drift complaint at runtime" \
   "[ -z \"\$(ech '$R538' next 2>&1 >/dev/null | grep -i 'DELEGATE_ROW_COLS')\" ]"
+fi
+
+# S354's public seams: beat, status, stalled, next, the column contract and
+# the installed heartbeat command. Select one slice for the red/green loop.
+s354_case() { [ -z "${LCARS_S354_CASE:-}" ] || [ "$LCARS_S354_CASE" = "$1" ]; }
+s354_limit() ( export LCARS_ECH_STEP_STALL_BEATS="$1"; shift; ech "$@"; )
+s354_repo() {
+  local r; r="$(new_repo)"
+  ap_init "$r"
+  new_mission "$r" progress implement
+  ech "$r" tier progress --tier T1 --why "one bounded unit" >"$TMPROOT/mint.log" 2>&1
+  ech "$r" delegate progress >>"$TMPROOT/mint.log" 2>&1
+  printf '%s\n' "$r"
+}
+
+if s354_case 1; then
+  printf '\n== S354/1. a step is recorded in the ledger and shown on the existing line ==\n'
+  r354="$(s354_repo)"
+  out="$(ech "$r354" beat d1 "wrote the failing test" --step 3/7 2>&1)"; rc=$?
+  check "S354/1 step beat succeeds" "[ $rc -eq 0 ]"
+  check "S354/1 ledger and mirror record the same step and timestamp" \
+    "python3 - '$r354/.git/lcars/autopilot.json' <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))['delegates']['d1']
+b = r.get('beats', [{}])[-1]
+assert b.get('step') == {'k': 3, 'n': 7}, b
+assert r.get('step') == {'k': 3, 'n': 7, 'at': b['at']}, r
+assert r['lastBeatAt'] == b['at']
+PY"
+  out="$(ech "$r354" status 2>&1)"
+  check "S354/1 status shows step 3/7 on the EXISTING delegates line" \
+    "printf '%s\n' \"\$out\" | grep '  delegates:' | grep -q 'step 3/7'"
+  out="$(ech "$r354" --help 2>&1)"
+  check "S354/1 help advertises the OPTIONAL --step K/N argument" \
+    "printf '%s\n' \"\$out\" | grep -q 'beat <delegate-id>.*\\[--step K/N\\]'"
+fi
+
+if s354_case 2; then
+  printf '\n== S354/2. legacy beats and delegate-free screens are byte-identical ==\n'
+  mkdir -p "$TMPROOT/baseline354"
+  cp -R "$REPO_ROOT/skills" "$TMPROOT/baseline354/skills"
+  base354="$TMPROOT/baseline354/skills/lcars-eeh/ech.sh"
+  git -C "$REPO_ROOT" show HEAD:skills/lcars-eeh/ech.sh >"$base354"
+  r354="$(s354_repo)"
+  cp "$r354/.git/lcars/autopilot.json" "$TMPROOT/before-beat.json"
+  real_date354="$(command -v date)"
+  mkdir -p "$TMPROOT/clock"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'if [ "$*" = +%%s ]; then echo 1794600000; else exec "%s" "$@"; fi\n' "$real_date354"
+  } >"$TMPROOT/clock/date"
+  chmod +x "$TMPROOT/clock/date"
+  PATH="$TMPROOT/clock:$PATH" ech_at "$base354" "$r354" beat d1 "legacy progress" >"$TMPROOT/beat-before.out" 2>&1
+  cp "$r354/.git/lcars/autopilot.json" "$TMPROOT/beat-before.json"
+  cp "$TMPROOT/before-beat.json" "$r354/.git/lcars/autopilot.json"
+  PATH="$TMPROOT/clock:$PATH" ech "$r354" beat d1 "legacy progress" >"$TMPROOT/beat-after.out" 2>&1
+  check "S354/2 a beat WITHOUT --step is byte-identical in output AND persisted state" \
+    "cmp -s '$TMPROOT/beat-before.out' '$TMPROOT/beat-after.out' && cmp -s '$TMPROOT/beat-before.json' '$r354/.git/lcars/autopilot.json'"
+  r354="$(new_repo)"; ap_init "$r354"
+  for verb354 in stalled status "watch status" next; do
+    ech_at "$base354" "$r354" $verb354 >"$TMPROOT/screen-before.out" 2>&1; before354=$?
+    ech "$r354" $verb354 >"$TMPROOT/screen-after.out" 2>&1; after354=$?
+    check "S354/2 NO delegates: $verb354 is byte-identical with the same exit code" \
+      "cmp -s '$TMPROOT/screen-before.out' '$TMPROOT/screen-after.out' && [ $before354 -eq $after354 ]"
+  done
+fi
+
+if s354_case 3; then
+  printf '\n== S354/3. junk steps refuse BEFORE any write ==\n'
+  r354="$(s354_repo)"
+  ech "$r354" beat d1 "existing history" >"$TMPROOT/beat.log" 2>&1
+  cp "$r354/.git/lcars/autopilot.json" "$TMPROOT/before-junk.json"
+  for junk354 in 0/7 8/7 3/0 abc 3/ /7 -1/7 1.5/7 1/999999999999999999999; do
+    out="$(ech "$r354" beat d1 "must not record" --step "$junk354" 2>&1)"; rc=$?
+    check "S354/3 --step $junk354 refuses, names field/value/legal range, and records NOTHING" \
+      "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -qF -- '--step' && printf '%s' \"\$out\" | grep -qF -- '$junk354' && printf '%s' \"\$out\" | grep -q '1 <= K <= N <= 1000000' && cmp -s '$TMPROOT/before-junk.json' '$r354/.git/lcars/autopilot.json'"
+  done
+  for flags354 in "--step" "--step 1/7 --step 2/7"; do
+    out="$(ech "$r354" beat d1 "must not record" $flags354 2>&1)"; rc=$?
+    check "S354/3 missing or duplicate step refuses without a partial write ($flags354)" \
+      "[ $rc -ne 0 ] && cmp -s '$TMPROOT/before-junk.json' '$r354/.git/lcars/autopilot.json'"
+  done
+fi
+
+if s354_case 4; then
+  printf '\n== S354/4. three fresh beats without motion name the next action ==\n'
+  r354="$(s354_repo)"
+  for i354 in 1 2 3; do
+    ech "$r354" beat d1 "still on the failing test" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  done
+  python3 - "$r354/.git/lcars/autopilot.json" <<'PY'
+import json, sys, time
+f = sys.argv[1]
+d = json.load(open(f))
+d['delegates']['d1']['beats'][0]['at'] = int(time.time()) - 120
+json.dump(d, open(f, 'w'), indent=2)
+PY
+  out="$(ech "$r354" stalled 2>&1)"; rc=$?
+  check "S354/4 BEATING BUT NOT MOVING names delegate, unit, tier, step, beats, duration and threshold" \
+    "[ $rc -eq 0 ] && printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1 (unit progress, tier T1)' && printf '%s' \"\$out\" | grep -q 'step 3/7' && printf '%s' \"\$out\" | grep -q '3 beats' && printf '%s' \"\$out\" | grep -q '2m' && printf '%s' \"\$out\" | grep -q '3 beats (LCARS_ECH_STEP_STALL_BEATS)'"
+  check "S354/4 the lane quotes last words, says NOT silence/NOT a verdict, and gives concrete actions" \
+    "printf '%s' \"\$out\" | grep -q 'still on the failing test' && printf '%s' \"\$out\" | grep -q 'NOT silence' && printf '%s' \"\$out\" | grep -q 'NOT a verdict' && printf '%s' \"\$out\" | grep -q 'what to do' && printf '%s' \"\$out\" | grep -q 'delegate close d1' && printf '%s' \"\$out\" | grep -q 'delegate progress' && printf '%s' \"\$out\" | grep -q -- '--mission progress'"
+  check "S354/4 not-moving has its OWN tally" \
+    "printf '%s' \"\$out\" | grep -q '1 delegate(s) are beating but not moving'"
+fi
+
+if s354_case 5; then
+  printf '\n== S354/5. advancing clears motion attention, not just another pulse ==\n'
+  r354="$(s354_repo)"
+  for i354 in 1 2 3; do
+    ech "$r354" beat d1 "working through the same step" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  done
+  out="$(ech "$r354" next 2>&1)"
+  check "S354/5 next notices NOT-MOVING and points to stalled without replacing NEXT" \
+    "printf '%s' \"\$out\" | grep -q 'DELEGATE NOT-MOVING: d1' && printf '%s' \"\$out\" | grep -q 'step 3/7' && printf '%s' \"\$out\" | grep -q 'lcars-ech stalled' && printf '%s' \"\$out\" | grep -q '^NEXT:'"
+  ech "$r354" beat d1 "same K, revised plan" --step 3/8 >"$TMPROOT/beat.log" 2>&1
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/5 changing N alone is NOT an advance" \
+    "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1'"
+  ech "$r354" beat d1 "went backward" --step 2/8 >"$TMPROOT/beat.log" 2>&1
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/5 going backward is NOT an advance" \
+    "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1'"
+  ech "$r354" beat d1 "step advanced" --step 4/8 >"$TMPROOT/beat.log" 2>&1
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/5 an advancing K CLEARS the not-moving lane" \
+    "! printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE'"
+  out="$(ech "$r354" next 2>&1)"
+  check "S354/5 advancement also CLEARS next's delegate attention banner" \
+    "! printf '%s' \"\$out\" | grep -q 'DELEGATE NOT-MOVING'"
+  check "S354/5 advancement preserves the full append-only history" \
+    "[ \"\$(apj '$r354' delegates.d1.beats | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')\" -eq 6 ]"
+fi
+
+if s354_case 6; then
+  printf '\n== S354/6. no reported step means NO claim about motion ==\n'
+  r354="$(s354_repo)"
+  for i354 in 1 2 3 4 5 6 7 8 9 10; do
+    ech "$r354" beat d1 "legacy pulse $i354" >"$TMPROOT/beat.log" 2>&1
+  done
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/6 ten legacy beats NEVER imply not-moving" \
+    "[ -z \"\$out\" ]"
+  out="$(ech "$r354" next 2>&1)"
+  check "S354/6 next does NOT invent a motion banner for a legacy delegate" \
+    "! printf '%s' \"\$out\" | grep -q 'DELEGATE NOT-MOVING'"
+  backdate354="$(python3 -c 'import time; print(int(time.time()) - 7200)')"
+  ech "$r354" record delegates.d1.lastBeatAt "$backdate354" >"$TMPROOT/record.log" 2>&1
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/6 a silent legacy delegate is SILENT, never NOT-MOVING" \
+    "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE: d1' && ! printf '%s' \"\$out\" | grep -q 'NOT-MOVING'"
+fi
+
+if s354_case 7; then
+  printf '\n== S354/7. the motion threshold degrades loudly, never silences unrelated reports ==\n'
+  r354="$(s354_repo)"
+  for i354 in 1 2 3; do
+    ech "$r354" beat d1 "still on step three" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  done
+  out="$(s354_limit 4 "$r354" stalled 2>&1)"
+  check "S354/7 threshold 4 does NOT report three stuck beats" \
+    "! printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE'"
+  out="$(s354_limit 2 "$r354" stalled 2>&1)"
+  check "S354/7 threshold 2 DOES report and STATES the threshold applied" \
+    "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1' && printf '%s' \"\$out\" | grep -q '2 beats (LCARS_ECH_STEP_STALL_BEATS)'"
+  out="$(s354_limit 0003 "$r354" stalled 2>&1)"
+  check "S354/7 a leading-zero threshold is base ten" \
+    "printf '%s' \"\$out\" | grep -q '3 beats (LCARS_ECH_STEP_STALL_BEATS)'"
+  for bad354 in '' abc 1 0 -2 1.5 1001 999999999999999999999; do
+    s354_limit "$bad354" "$r354" stalled >"$TMPROOT/bad-threshold.out" 2>"$TMPROOT/bad-threshold.err"; rc=$?
+    check "S354/7 malformed threshold '$bad354' exits 0, warns, and reports at the DEFAULT in band" \
+      "[ $rc -eq 0 ] && grep -q 'NOT-MOVING DELEGATE: d1' '$TMPROOT/bad-threshold.out' && grep -q 'DEFAULT' '$TMPROOT/bad-threshold.out' && grep -q 'REJECTED' '$TMPROOT/bad-threshold.out' && grep -q 'LCARS_ECH_STEP_STALL_BEATS' '$TMPROOT/bad-threshold.err' && grep -q 'WARNING' '$TMPROOT/bad-threshold.err' && ! grep -q 'Traceback' '$TMPROOT/bad-threshold.err'"
+  done
+  r354="$(new_repo)"; ap_init "$r354"; new_mission "$r354" failed-motion-control implement
+  python3 - "$r354/.git/lcars/missions/failed-motion-control/state.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d.update(failedStage='implement', failedAt=1794500000, failedReason='known-good control')
+json.dump(d, open(f, 'w'), indent=2)
+PY
+  ech "$r354" stalled >"$TMPROOT/mission-clean.out" 2>"$TMPROOT/mission-clean.err"; clean354=$?
+  s354_limit abc "$r354" stalled >"$TMPROOT/mission-bad.out" 2>"$TMPROOT/mission-bad.err"; badrc354=$?
+  check "S354/7 CONTROL: clean env, NO delegates, failed mission is genuinely reported" \
+    "[ $clean354 -eq 0 ] && grep -q 'FAILED AND IDLE: failed-motion-control' '$TMPROOT/mission-clean.out' && [ -z \"\$(apj '$r354' delegates)\" ]"
+  check "S354/7 malformed threshold leaves unrelated mission report BYTE-IDENTICAL and stalled exits 0" \
+    "[ $badrc354 -eq 0 ] && cmp -s '$TMPROOT/mission-clean.out' '$TMPROOT/mission-bad.out' && grep -q 'WARNING' '$TMPROOT/mission-bad.err' && [ ! -s '$TMPROOT/mission-clean.err' ]"
+  for verb354 in status "watch status" next; do
+    ech "$r354" $verb354 >"$TMPROOT/clean.out" 2>"$TMPROOT/clean.err"; clean354=$?
+    s354_limit abc "$r354" $verb354 >"$TMPROOT/bad.out" 2>"$TMPROOT/bad.err"; badrc354=$?
+    check "S354/7 malformed threshold leaves $verb354 stdout and exit code unchanged" \
+      "[ $clean354 -eq $badrc354 ] && cmp -s '$TMPROOT/clean.out' '$TMPROOT/bad.out'"
+  done
+fi
+
+if s354_case 8; then
+  printf '\n== S354/8. a done delegate is never reported not-moving ==\n'
+  r354="$(s354_repo)"
+  for i354 in 1 2 3; do
+    ech "$r354" beat d1 "still on step three" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  done
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/8 CONTROL: the active delegate really IS not-moving before close" \
+    "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1'"
+  ech "$r354" delegate close d1 >"$TMPROOT/close.log" 2>&1
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/8 closing clears not-moving without destroying its stuck history" \
+    "[ -z \"\$out\" ] && [ \"\$(apj '$r354' delegates.d1.status)\" = done ] && [ \"\$(apj '$r354' delegates.d1.step.k)\" = 3 ]"
+  out="$(ech "$r354" next 2>&1)"
+  check "S354/8 next never banners the DONE delegate" \
+    "! printf '%s' \"\$out\" | grep -q 'DELEGATE NOT-MOVING'"
+fi
+
+if s354_case 9; then
+  printf '\n== S354/9. not-moving and silence are independent signals ==\n'
+  r354="$(s354_repo)"
+  for i354 in 1 2 3; do
+    ech "$r354" beat d1 "no motion yet" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  done
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/9 a fresh not-moving delegate is NOT also called silent" \
+    "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1' && ! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE:'"
+  backdate354="$(python3 -c 'import time; print(int(time.time()) - 7200)')"
+  ech "$r354" record delegates.d1.lastBeatAt "$backdate354" >"$TMPROOT/record.log" 2>&1
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/9 a delegate both stuck AND quiet reports BOTH lanes and BOTH tallies" \
+    "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1' && printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE: d1' && printf '%s' \"\$out\" | grep -q '1 delegate(s) are beating but not moving' && printf '%s' \"\$out\" | grep -q '1 delegate(s) have gone quiet'"
+  ech "$r354" beat d1 "BLOCKED: need a decision" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  out="$(ech "$r354" stalled 2>&1)"
+  check "S354/9 BLOCKED does not swallow the motion lane either" \
+    "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1' && printf '%s' \"\$out\" | grep -q 'BLOCKED DELEGATE: d1'"
+fi
+
+if s354_case 10; then
+  printf '\n== S354/10. the rendered brief teaches a runnable step beat and why ==\n'
+  r354="$(s354_repo)"
+  b354="$r354/.git/lcars/delegates/d1/BRIEF.md"
+  check "S354/10 brief asks the delegate to DECLARE its N" \
+    "grep -qi 'declare.*N' '$b354'"
+  check "S354/10 brief says WHY: alive is not getting anywhere" \
+    "grep -q 'a beat without a step proves you are alive, not that you are getting anywhere' '$b354'"
+  python3 - "$b354" "$TMPROOT/brief-beat.sh" <<'PY'
+import sys
+s = open(sys.argv[1]).read().split('### And while you work: BEAT', 1)[1].split('## 3.', 1)[0]
+commands = [line[4:] for line in s.splitlines() if line.startswith('    ')]
+open(sys.argv[2], 'w').write('\n'.join(commands) + '\n')
+PY
+  check "S354/10 the command has its OWN id, absolute launcher and --step substituted" \
+    "grep -qF 'bash $REPO_ROOT/skills/lcars-eeh/ech.sh beat d1' '$TMPROOT/brief-beat.sh' && grep -q -- '--step' '$TMPROOT/brief-beat.sh' && ! grep -q '{{' '$b354'"
+  ( cd "$r354" && bash "$TMPROOT/brief-beat.sh" ) >"$TMPROOT/brief-command.log" 2>&1; rc=$?
+  check "S354/10 the rendered command RUNS AS IT STANDS and records step 1/7" \
+    "[ $rc -eq 0 ] && [ \"\$(apj '$r354' delegates.d1.step.k)\" = 1 ] && [ \"\$(apj '$r354' delegates.d1.step.n)\" = 7 ]"
+  check "S354/10 DELEGATION states the motion rule ONCE in the existing NO SILENT HOURS section" \
+    "python3 - '$REPO_ROOT/skills/lcars-eeh/DELEGATION.md' <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+section = s.split('## NO SILENT HOURS', 1)[1].split('\n## ', 1)[0]
+reason = 'a beat without a step proves you are alive, not that you are getting anywhere'
+assert s.count(reason) == 1 and reason in section
+assert 'LCARS_ECH_STEP_STALL_BEATS' in section and '--step K/N' in section
+PY"
+  check "S354/10 ORCHESTRATION.md and HCM are UNTOUCHED" \
+    "git -C '$REPO_ROOT' diff --exit-code HEAD -- skills/lcars-eeh/ORCHESTRATION.md skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+fi
+
+if s354_case 11; then
+  printf '\n== S354/11. all FOUR readers widen, and an unwidened reader still fails ==\n'
+  guard354="$TMPROOT/s354-rowguard.py"
+  awk '$0 == "cat >\"$ROWGUARD\" <<\047ROWGUARD_PY\047" {on=1; next}
+       on && $0 == "ROWGUARD_PY" {exit}
+       on {print}' "$DIR/delegation.test.sh" >"$guard354"
+  out="$(python3 "$guard354" "$SCRIPT" 2>&1)"; rc=$?
+  printf '%s\n' "$out"
+  check "S354/11 column guard is PROBLEMS=0 at 17 columns and FOUR readers" \
+    "[ $rc -eq 0 ] && [ \"\$out\" = 'COLS=17 READERS=4 PROBLEMS=0' ]"
+  sed "s/^\(DELEGATE_ROW_COLS='[^']*\)'/\1 forgotten'/" "$SCRIPT" >"$TMPROOT/extra-column354.sh"
+  out="$(python3 "$guard354" "$TMPROOT/extra-column354.sh" 2>&1)"; rc=$?
+  check "S354/11 adding a column WITHOUT widening readers still FAILS the guard" \
+    "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -q 'COLS=18 READERS=4 PROBLEMS=4'"
+fi
+
+if s354_case 12; then
+  printf '\n== S354/12. the INSTALLED crontab command itself names not-moving ==\n'
+  (
+    export LCARS_INSTALL_PREFIX="$TMPROOT/install354"
+    export LCARS_SKILLS_DEST="$LCARS_INSTALL_PREFIX/claude-skills"
+    unset LCARS_BIN_DEST LCARS_COPILOT_PLUGINS_DIR LCARS_COPILOT_CONFIG LCARS_VERSION_STAMP
+    bash "$REPO_ROOT/install.sh"
+  ) >"$TMPROOT/install354.log" 2>&1
+  installed354="$TMPROOT/install354/bin/lcars-ech"
+  check "S354/12 an ISOLATED install produced the absolute launcher" \
+    "[ -x '$installed354' ]"
+  export S354_CRON_TABLE="$TMPROOT/crontab354"
+  cat >"$STUBS/crontab" <<'SH'
+#!/usr/bin/env bash
+printf 's354-crontab %s\n' "$*" >>"$STUB_LOG"
+case "${1:-}" in
+  -l) if [ -f "$S354_CRON_TABLE" ]; then cat "$S354_CRON_TABLE"; fi ;;
+  -) cat >"$S354_CRON_TABLE" ;;
+  *) exit 1 ;;
+esac
+SH
+  chmod +x "$STUBS/crontab"
+  r354="$(new_repo)"; ap_init "$r354"; new_mission "$r354" installed-motion implement
+  ech_at "$installed354" "$r354" tier installed-motion --tier T1 --why "installed proof" >"$TMPROOT/installed354.log" 2>&1
+  ech_at "$installed354" "$r354" delegate installed-motion >>"$TMPROOT/installed354.log" 2>&1
+  for i354 in 1 2 3; do
+    ech_at "$installed354" "$r354" beat d1 "still on installed step" --step 3/7 >>"$TMPROOT/installed354.log" 2>&1
+  done
+  ech_at "$installed354" "$r354" heartbeat install >>"$TMPROOT/installed354.log" 2>&1; rc=$?
+  check "S354/12 heartbeat installs ONLY into the stubbed crontab" \
+    "[ $rc -eq 0 ] && [ -s '$S354_CRON_TABLE' ] && grep -q 's354-crontab -' '$STUB_LOG'"
+  command354="$(sed -n 's/^17 \* \* \* \* \(.*\) # LCARS-ECH.*$/\1/p' "$S354_CRON_TABLE")"
+  check "S354/12 recover the actual installed table command, which still calls stalled" \
+    "[ -n \"\$command354\" ] && printf '%s' \"\$command354\" | grep -q ' stalled '"
+  bash -c "$command354" >"$TMPROOT/cron-command354.log" 2>&1; rc=$?
+  log354="$r354/.git/lcars/autopilot/heartbeat.log"
+  check "S354/12 the installed CRONTAB COMMAND names the not-moving delegate and next action" \
+    "[ $rc -eq 0 ] && grep -q 'NOT-MOVING DELEGATE: d1 (unit installed-motion, tier T1)' '$log354' && grep -q 'step 3/7' '$log354' && grep -q 'what to do' '$log354'"
+  ech_at "$installed354" "$r354" heartbeat remove >>"$TMPROOT/installed354.log" 2>&1
+  stub "$STUBS/crontab" 0
+fi
+
+# S354 fix 1: the public report seams, not the sanitizer's implementation.
+s354_fix1_inert() {
+  python3 - "$1" "$2" <<'PY'
+import pathlib, sys
+data = pathlib.Path(sys.argv[1]).read_bytes()
+expected = sys.argv[2].encode()
+assert expected in data, (expected, data)
+# watch's own plan has TSV separators; untrusted TABs must be escaped.
+assert not any(c < 32 and c not in (9, 10) or c == 127 for c in data), repr(data)
+for line in data.splitlines():
+    if expected in line:
+        print(line.decode())
+PY
+}
+s354_fix1_stuck() {
+  local r; r="$(s354_repo)"
+  ech "$r" beat d1 "working" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  ech "$r" beat d1 "working" --step 3/7 >>"$TMPROOT/beat.log" 2>&1
+  printf '%s\n' "$r"
+}
+
+if s354_case fix1-1; then
+  r354="$(s354_fix1_stuck)"
+  ech "$r354" beat d1 $'progress\rNOT-MOVING DELEGATE: forged-cr' --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
+  check "S354fix1/1 motion last words escape CR, never emit it" \
+    "[ $rc -eq 0 ] && grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/report.out' && s354_fix1_inert '$TMPROOT/report.out' 'progress\\rNOT-MOVING DELEGATE: forged-cr'"
+fi
+
+if s354_case fix1-2; then
+  r354="$(s354_fix1_stuck)"
+  ech "$r354" beat d1 $'progress\e[2J\e[HSILENT DELEGATE: forged-ansi' --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
+  check "S354fix1/2 motion last words escape ESC clear-and-home" \
+    "[ $rc -eq 0 ] && grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/report.out' && s354_fix1_inert '$TMPROOT/report.out' 'progress\\x1b[2J\\x1b[HSILENT DELEGATE: forged-ansi'"
+fi
+
+if s354_case fix1-3; then
+  r354="$(s354_repo)"
+  for lane354 in quiet BLOCKED; do
+    ech "$r354" beat d1 "$lane354"$': progress\r\e[2J\e[H\b\v\f\177' >"$TMPROOT/beat.log" 2>&1
+    check "S354fix1/3 beat acknowledgement also renders controls inertly ($lane354)" \
+      "s354_fix1_inert '$TMPROOT/beat.log' '$lane354: progress\\r\\x1b[2J\\x1b[H\\b\\x0b\\f\\x7f'"
+    ech "$r354" record delegates.d1.lastBeatAt "$(($(date +%s) - 7200))" >"$TMPROOT/record.log" 2>&1
+    for verb354 in stalled next; do
+      ech "$r354" $verb354 >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"
+      check "S354fix1/3 inherited $lane354 lane renders controls inertly on $verb354" \
+        "s354_fix1_inert '$TMPROOT/report.out' '$lane354: progress\\r\\x1b[2J\\x1b[H\\b\\x0b\\f\\x7f'"
+    done
+  done
+  ech "$r354" watch start >"$TMPROOT/watch-start.log" 2>&1
+  watchlog354="$r354/.git/lcars/autopilot/watch.log"
+  for i354 in $(seq 1 300); do
+    grep -q 'what clears this line' "$watchlog354" 2>/dev/null && break
+    sleep 0.1
+  done
+  ech "$r354" watch stop >"$TMPROOT/watch-stop.log" 2>&1
+  check "S354fix1/3 watch wake renders the inherited last words inertly" \
+    "s354_fix1_inert '$watchlog354' 'BLOCKED: progress\\r\\x1b[2J\\x1b[H\\b\\x0b\\f\\x7f'"
+  ech "$r354" tier progress --tier T1 --why $'reason\r\e[2J' >"$TMPROOT/tier.log" 2>&1
+  check "S354fix1/3 tier acknowledgement also renders its reason inertly" \
+    "s354_fix1_inert '$TMPROOT/tier.log' 'WHY: reason\\r\\x1b[2J'"
+  # Include NUL (which cannot be an exec argument), every other C0 and DEL,
+  # and hostile metadata in each lane, including ones with no last-words quote.
+  for lane354 in quiet never untimeable; do
+    python3 - "$r354/.git/lcars/autopilot.json" "$lane354" <<'PY'
+import json, sys, time
+f, lane = sys.argv[1:]
+d = json.load(open(f))
+r = d["delegates"]["d1"]
+r["unit"] = "unit\r\x1b\x00\t\nend"
+r["tier"] = "T1\r\x1b"
+r["status"] = "minted\r\x1b"
+r["createdAt"] = int(time.time()) - 7200
+r["lastBeatAt"] = "broken" if lane == "untimeable" else int(time.time()) - 7200
+r["beats"] = [{"at": int(time.time()) - 7200,
+               "line": "controls:" + "".join(map(chr, range(32))) + chr(127) + ":end"}]
+if lane == "never":
+    r.pop("lastBeatAt")
+    r["beats"] = []
+json.dump(d, open(f, "w"))
+PY
+    for verb354 in stalled status next delegates; do
+      ech "$r354" $verb354 >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"
+      check "S354fix1/3 $lane354 metadata is inert on $verb354, including NUL and TAB" \
+        "s354_fix1_inert '$TMPROOT/report.out' 'unit\\r\\x1b\\x00\\t\\nend'"
+      if [ "$lane354:$verb354" = quiet:stalled ]; then
+        check "S354fix1/3 every C0 byte and DEL in last words is visibly escaped" \
+          "s354_fix1_inert '$TMPROOT/report.out' 'controls:\\x00\\x01\\x02\\x03\\x04\\x05\\x06\\x07\\b\\t\\n\\x0b\\f\\r\\x0e\\x0f\\x10\\x11\\x12\\x13\\x14\\x15\\x16\\x17\\x18\\x19\\x1a\\x1b\\x1c\\x1d\\x1e\\x1f\\x7f:end'"
+      fi
+    done
+  done
+  ech "$r354" record delegates.d1.unit $'closed\r\e' >"$TMPROOT/record.log" 2>&1
+  ech "$r354" record delegates.d1.status done >>"$TMPROOT/record.log" 2>&1
+  ech "$r354" beat d1 "late progress" >"$TMPROOT/beat.log" 2>&1
+  check "S354fix1/3 a closed delegate's beat notes also render metadata inertly" \
+    "s354_fix1_inert '$TMPROOT/beat.log' 'closed\\r\\x1b'"
+fi
+
+if s354_case fix1-4; then
+  r354="$(s354_fix1_stuck)"
+  ech "$r354" beat d1 "working" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  s354_limit $'garbage\nFORGED DELEGATE LINE: step\r\e' "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
+  check "S354fix1/4 malformed STEP_STALL_BEATS warns, degrades to 3, exits 0" \
+    "[ $rc -eq 0 ] && grep -q '3 beats (LCARS_ECH_STEP_STALL_BEATS).*DEFAULT' '$TMPROOT/report.out' && grep -q 'WARNING.*3-beat DEFAULT' '$TMPROOT/report.err'"
+  for stream354 in out err; do
+    check "S354fix1/4 STEP_STALL_BEATS cannot forge a diagnostic line on $stream354" \
+      "s354_fix1_inert '$TMPROOT/report.$stream354' 'garbage\\nFORGED DELEGATE LINE: step\\r\\x1b'"
+  done
+fi
+
+if s354_case fix1-5; then
+  r354="$(s354_repo)"
+  ech "$r354" beat d1 "working" >"$TMPROOT/beat.log" 2>&1
+  ech "$r354" record delegates.d1.lastBeatAt "$(($(date +%s) - 7200))" >"$TMPROOT/record.log" 2>&1
+  ( export LCARS_ECH_BEAT_LIMIT=$'garbage\nFORGED DELEGATE LINE: limit\r\e'; ech "$r354" stalled ) >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
+  check "S354fix1/5 malformed BEAT_LIMIT warns, degrades to 1800, exits 0" \
+    "[ $rc -eq 0 ] && grep -q '1800s (30m).*DEFAULT' '$TMPROOT/report.out' && grep -q 'WARNING.*1800s default' '$TMPROOT/report.err'"
+  for stream354 in out err; do
+    check "S354fix1/5 BEAT_LIMIT cannot forge a diagnostic line on $stream354" \
+      "s354_fix1_inert '$TMPROOT/report.$stream354' 'garbage\\nFORGED DELEGATE LINE: limit\\r\\x1b'"
+  done
+fi
+
+if s354_case fix1-6; then
+  r354="$(s354_fix1_stuck)"
+  ordinary354='ordinary progress: "quotes", \backslash, $dollar, [brackets], café'
+  ech "$r354" beat d1 "$ordinary354" --step 3/7 >"$TMPROOT/beat.log" 2>&1
+  ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"
+  check "S354fix1/6 ordinary last words match the pre-fix report byte-for-byte" \
+    "python3 - '$TMPROOT/report.out' <<'PY'
+import pathlib, sys
+expected = '  → this motion signal is NOT silence: the delegate spoke. It is NOT a verdict. Its last words: \"ordinary progress: \"quotes\", \\\\backslash, \u0024dollar, [brackets], café\"'
+assert expected.encode() in pathlib.Path(sys.argv[1]).read_bytes().splitlines()
+print(expected)
+PY"
+fi
+
+if s354_case fix1-7; then
+  r354="$(s354_repo)"
+  ech "$r354" beat d1 $'faithful\r\e[2J\e[H\b\v\f\t\177' --step 3/7 >"$TMPROOT/beat.log" 2>&1; rc=$?
+  check "S354fix1/7 CR/ESC beat exits 0 and ledger retains every original byte" \
+    "[ $rc -eq 0 ] && python3 - '$r354/.git/lcars/autopilot.json' <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))['delegates']['d1']
+expected = 'faithful\r\x1b[2J\x1b[H\b\v\f\t\x7f'
+assert r['beats'][-1]['line'] == expected, repr(r['beats'][-1]['line'])
+print('stored line = ' + repr(r['beats'][-1]['line']) + '; beat exit = 0')
+PY"
+fi
+
+if s354_case fix1-8; then
+  r354="$(s354_repo)"
+  cp "$r354/.git/lcars/autopilot.json" "$TMPROOT/before-newline.json"
+  ech "$r354" beat d1 $'progress\nFORGED DELEGATE LINE' >"$TMPROOT/beat.log" 2>&1; rc=$?
+  check "S354fix1/8 newline beat still refuses before any write" \
+    "[ $rc -eq 1 ] && grep -q 'a beat must be ONE line' '$TMPROOT/beat.log' && cmp -s '$TMPROOT/before-newline.json' '$r354/.git/lcars/autopilot.json'"
+  cat "$TMPROOT/beat.log"
+fi
+
+if s354_case fix1-9; then
+  mkdir -p "$TMPROOT/baseline-fix1"
+  cp -R "$REPO_ROOT/skills" "$TMPROOT/baseline-fix1/skills"
+  base354="$TMPROOT/baseline-fix1/skills/lcars-eeh/ech.sh"
+  git -C "$REPO_ROOT" show HEAD:skills/lcars-eeh/ech.sh >"$base354"
+  r354="$(new_repo)"; ap_init "$r354"
+  for verb354 in stalled status "watch status" next; do
+    ech_at "$base354" "$r354" $verb354 >"$TMPROOT/screen-before.out" 2>"$TMPROOT/screen-before.err"; before354=$?
+    ech "$r354" $verb354 >"$TMPROOT/screen-after.out" 2>"$TMPROOT/screen-after.err"; after354=$?
+    check "S354fix1/9 NO delegates: $verb354 stdout/stderr/exit byte-identical (exit $after354)" \
+      "cmp -s '$TMPROOT/screen-before.out' '$TMPROOT/screen-after.out' && cmp -s '$TMPROOT/screen-before.err' '$TMPROOT/screen-after.err' && [ $before354 -eq $after354 ] && [ $after354 -eq 0 ]"
+  done
+fi
+
+if s354_case fix3-1; then
+  printf '\n== S354fix3/1. C1 controls are escaped at render time, not in the ledger ==\n'
+  r354="$(s354_fix1_stuck)"
+  for encoding354 in raw utf8; do
+    for c1354 in 80 9b 9f; do
+      line354="$(python3 - "$encoding354" "$c1354" <<'PY'
+import sys
+encoding, code = sys.argv[1], int(sys.argv[2], 16)
+control = bytes([code]) if encoding == 'raw' else chr(code).encode('utf-8')
+sys.stdout.buffer.write(b'progress:' + control + b'[2J:end')
+PY
+)"
+      ech "$r354" beat d1 "$line354" --step 3/7 >"$TMPROOT/beat.log" 2>&1; beatrc354=$?
+      check "S354fix3/1 $encoding354 C1 0x$c1354 beat exits 0 and ledger retains original bytes" \
+        "[ $beatrc354 -eq 0 ] && python3 - '$r354/.git/lcars/autopilot.json' \"\$line354\" <<'PY'
+import json, os, sys
+r = json.load(open(sys.argv[1]))['delegates']['d1']
+stored = r['beats'][-1]['line'].encode('utf-8', 'surrogateescape')
+assert stored == os.fsencode(sys.argv[2]), repr(stored)
+PY"
+      ech "$r354" record delegates.d1.lastBeatAt 1700000000 >"$TMPROOT/record.log" 2>&1
+      ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
+      escaped354="progress:\\x$c1354[2J:end"
+      check "S354fix3/1 $encoding354 C1 0x$c1354 stalled emits visible escape and no raw control byte" \
+        "[ $rc -eq 0 ] && grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/report.out' && grep -q '^SILENT DELEGATE: d1' '$TMPROOT/report.out' && python3 - '$TMPROOT/report.out' \"\$escaped354\" '$c1354' <<'PY'
+import pathlib, sys
+data = pathlib.Path(sys.argv[1]).read_bytes()
+expected, code = sys.argv[2].encode('ascii'), int(sys.argv[3], 16)
+assert expected in data, (expected, data)
+if code == 0x9b:
+    assert b'\x9b' not in data, repr(data)
+# The report's own UTF-8 punctuation contains 0x80; inspect the quoted words.
+for line in data.split(b'\n'):
+    if b'progress:' in line:
+        words = line.split(b'progress:', 1)[1].split(b':end', 1)[0]
+        assert bytes([code]) not in words, repr(words)
+PY"
+    done
+  done
+fi
+
+if s354_case fix3-2; then
+  printf '\n== S354fix3/2. CONTROL: C0 ESC and CR still escape without changing storage ==\n'
+  r354="$(s354_fix1_stuck)"
+  line354=$'C0 control:\033[2J\r:end'
+  ech "$r354" beat d1 "$line354" --step 3/7 >"$TMPROOT/beat.log" 2>&1; beatrc354=$?
+  check "S354fix3/2 CONTROL C0 beat exits 0 and ledger retains ESC and CR bytes" \
+    "[ $beatrc354 -eq 0 ] && python3 - '$r354/.git/lcars/autopilot.json' <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))['delegates']['d1']
+stored = r['beats'][-1]['line'].encode('utf-8', 'surrogateescape')
+assert stored == b'C0 control:\x1b[2J\r:end', repr(stored)
+PY"
+  ech "$r354" record delegates.d1.lastBeatAt 1700000000 >"$TMPROOT/record.log" 2>&1
+  ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
+  check "S354fix3/2 CONTROL stalled visibly escapes C0 with no raw ESC or CR bytes" \
+    "[ $rc -eq 0 ] && grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/report.out' && grep -q '^SILENT DELEGATE: d1' '$TMPROOT/report.out' && python3 - '$TMPROOT/report.out' <<'PY'
+import pathlib, sys
+data = pathlib.Path(sys.argv[1]).read_bytes()
+expected = br'C0 control:\x1b[2J\r:end'
+assert expected in data, (expected, data)
+assert b'\x1b' not in data and b'\r' not in data, repr(data)
+PY"
+fi
+
+if s354_case fix3-3; then
+  printf '\n== S354fix3/3. legitimate UTF-8 survives byte-for-byte, including continuation bytes ==\n'
+  r354="$(s354_fix1_stuck)"
+  ordinary354='café naïve — 日本語テスト 中文 🚀 Ωμέγα «quoted» C:\path\to\x 100% $HOME'
+  ech "$r354" beat d1 "$ordinary354" --step 3/7 >"$TMPROOT/beat.log" 2>&1; beatrc354=$?
+  check "S354fix3/3 CONTROL UTF-8 beat exits 0 and ledger retains every original byte" \
+    "[ $beatrc354 -eq 0 ] && python3 - '$r354/.git/lcars/autopilot.json' \"\$ordinary354\" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))['delegates']['d1']
+stored = r['beats'][-1]['line'].encode('utf-8', 'surrogateescape')
+assert stored == sys.argv[2].encode('utf-8'), repr(stored)
+PY"
+  ech "$r354" record delegates.d1.lastBeatAt 1700000000 >"$TMPROOT/record.log" 2>&1
+  ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
+  check "S354fix3/3 stalled preserves the exact multilingual and shell-literal UTF-8 bytes" \
+    "[ $rc -eq 0 ] && grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/report.out' && grep -q '^SILENT DELEGATE: d1' '$TMPROOT/report.out' && python3 - '$TMPROOT/report.out' \"\$ordinary354\" <<'PY'
+import pathlib, sys
+data = pathlib.Path(sys.argv[1]).read_bytes()
+expected = sys.argv[2].encode('utf-8')
+assert expected in data, (expected, data)
+PY"
+fi
 
 printf '\n== ZERO SPEND ==\n'
 

@@ -137,13 +137,21 @@ has no pid of yours to watch and no log of yours to read. Your beat is the only
 thing it can see.
 
 **One beat per step, as you finish it** — through the launcher named in
-*Where you work* above, by its absolute path:
+*Where you work* above, by its absolute path. **Declare N**, your total number
+of checkable steps, before starting; report the current K of that N. This
+runnable example declares seven steps and reports the first: set N to your
+own count and K to the step you just finished on subsequent calls.
 
-    {{LAUNCHER}} beat {{DELEGATE_ID}} "<one line of what you just did>"
+    N=7
+    K=1
+    {{LAUNCHER}} beat {{DELEGATE_ID}} "completed step $K of $N" --step "$K/$N"
+
+Why: a beat without a step proves you are alive, not that you are getting anywhere.
 
 One line, every time. It appends — a beat never overwrites an earlier one — so
 the sequence of them is the record of how you spent your hours, and the ECH
-reads your latest one as *where you got to*.
+reads your latest one as *where you got to*. Repeat the current step if it is
+still running; do not invent an advance to quiet the watchdog.
 
 {{BEAT_LIMIT}}
 
