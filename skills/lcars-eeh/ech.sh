@@ -178,6 +178,13 @@ usage() {
   usage <read|gate|config|help> [options]
                        the product Claude allowance reader, from any cwd;
                        gate exits 0 GO / 2 HOLD / 3 ASK / 4 UNKNOWN / 64 bad input
+  budget [--check <role> [--mission <mission>]]
+                       ceiling, weekly reading, source, age, remaining, reset and
+                       billed/exempt roles. --check is silent GO (0), PARK (10),
+                       or unreadable weekly.pct (11); run before any seat starts
+                       or resumes. Set with `record claudeCeilingPct <1-100>`.
+                       Unset = NO CEILING, not zero. Malformed = 100% DEFAULT
+                       with a warning, never a top-level refusal
   next [--all]         the ONE next mechanical step, and the HOLOGRAM-COMMAND-MODE.md heading for it
   await [--limit <s>]  block until a parallel slot frees, watching the RECORDED driver
                        PROCESSES. Returns 0 on a free slot, 124 when the bound passes
@@ -2270,6 +2277,209 @@ engine_name_ok() {
   return 1
 }
 
+CLAUDE_CEILING_DEFAULT=100
+CLAUDE_CEILING_PY='
+import json, math, re, sys
+def ceiling_number(v):
+    if isinstance(v, bool) or not re.fullmatch(r"[0-9]+", str(v)):
+        raise ValueError("not a number from 1 to 100")
+    n = float(v)
+    if not math.isfinite(n) or not 1 <= n <= 100:
+        raise ValueError("not a number from 1 to 100")
+    return format(n, ".15g")
+'
+ceiling_number() {
+  "$PY" -c "$CLAUDE_CEILING_PY
+try:
+    print(ceiling_number(sys.argv[1]))
+except ValueError:
+    sys.exit(1)
+" "${1-}"
+}
+
+ceiling_read() {
+  # Unlike jfile, this read must distinguish an absent key from a malformed
+  # null or empty value: corruption may not turn a declared guard off.
+  CLAUDE_CEILING="$("$PY" - "$APJSON" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except (OSError, ValueError):
+    sys.exit(0)  # require_state owns a missing or corrupt record.
+if isinstance(d, dict) and "claudeCeilingPct" in d:
+    v = d["claudeCeilingPct"]
+    print(("EMPTY" if v == "" else v) if isinstance(v, str) else json.dumps(v))
+PY
+)"
+  CLAUDE_CEILING_BAD=""
+  [ -n "${LCARS_ECH_CLAUDE_CEILING_PCT+set}" ] \
+    && CLAUDE_CEILING="$LCARS_ECH_CLAUDE_CEILING_PCT"
+  if [ -n "$CLAUDE_CEILING" ] || [ -n "${LCARS_ECH_CLAUDE_CEILING_PCT+set}" ]; then
+    local raw="$CLAUDE_CEILING" n
+    if n="$(ceiling_number "$raw")"; then
+      CLAUDE_CEILING="$n"
+    else
+      CLAUDE_CEILING_BAD="$(printf '%s' "$raw" | report_text_safe)"
+      [ -n "$CLAUDE_CEILING_BAD" ] || CLAUDE_CEILING_BAD="EMPTY"
+      CLAUDE_CEILING="$CLAUDE_CEILING_DEFAULT"
+      printf 'lcars ech: WARNING — claudeCeilingPct %s was REJECTED; the documented %s%% DEFAULT is in force. Reports that do not use this ceiling are untouched. Repair with `%s record claudeCeilingPct <1-100>` or unset LCARS_ECH_CLAUDE_CEILING_PCT if it supplied the value.\n' \
+        "$CLAUDE_CEILING_BAD" "$CLAUDE_CEILING" "$SELF_CMD" >&2
+    fi
+  fi
+}
+
+ceiling_said() {
+  if [ -z "$CLAUDE_CEILING" ]; then
+    printf 'NO CEILING (claudeCeilingPct is unset)'
+  elif [ -n "$CLAUDE_CEILING_BAD" ]; then
+    printf '%s%% — DEFAULT; claudeCeilingPct %s was REJECTED' "$CLAUDE_CEILING" "$CLAUDE_CEILING_BAD"
+  else
+    printf '%s%%' "$CLAUDE_CEILING"
+  fi
+}
+
+budget_read() {
+  local data
+  if ! data="$(bash "$USAGE_SCRIPT" read --json)"; then
+    printf 'lcars ech: weekly.pct could not be read from %s\n' "$USAGE_SCRIPT" >&2
+    [ -n "$data" ] || data='{}'
+  fi
+  BUDGET_JSON="$data"
+  local row
+  row="$("$PY" - "$data" "${CHAIN_NOW:-$(now)}" "${CLAUDE_CEILING:-}" <<'PY'
+import datetime, json, math, sys
+try:
+    d = json.loads(sys.argv[1])
+except (ValueError, TypeError):
+    sys.stderr.write("lcars ech: weekly.pct could not be read: invalid usage JSON\n")
+    d = {}
+def number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+w = d.get("weekly") or {}
+pct, reset, read_at = w.get("pct"), w.get("resetsAt"), d.get("readAt")
+valid = number(pct) and 0 <= pct <= 100
+reset_said = "UNREPORTED (weekly.resetsAt)"
+reset_state = "unreadable"
+if number(reset):
+    try:
+        reset_said = datetime.datetime.fromtimestamp(reset, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        reset_state = "future" if reset > float(sys.argv[2]) else "past"
+    except (ValueError, OverflowError, OSError):
+        pass
+print("\t".join([
+    format(pct, ".15g") if valid else "UNREADABLE",
+    str(d.get("source") or "unknown"),
+    str(max(0, int(float(sys.argv[2]) - read_at))) + "s" if number(read_at) else "unknown",
+    reset_said,
+    (format(max(0, float(sys.argv[3]) - pct), ".15g") + " percentage points of the weekly allowance"
+     if valid else "UNREADABLE (weekly.pct)") if sys.argv[3] else "not bounded (NO CEILING)",
+    reset_state,
+]))
+PY
+)" || return $?
+  IFS="$(printf '\t')" read -r BUDGET_WEEKLY BUDGET_SOURCE BUDGET_AGE BUDGET_RESET BUDGET_LEFT BUDGET_RESET_STATE <<BUDGET_ROW
+$row
+BUDGET_ROW
+  BUDGET_WEEKLY_SAID="$BUDGET_WEEKLY%"
+  [ "$BUDGET_WEEKLY" != UNREADABLE ] || BUDGET_WEEKLY_SAID="UNREADABLE (weekly.pct)"
+}
+
+budget_stamp() {
+  local role="$1" eng="$2"
+  if [ "$eng" != claude ]; then
+    BUDGET_STAMP="$role ($eng): exempt — employer-paid, unmetered for the captain; the Claude ceiling does not bind this role."
+    BUDGET_STAMP_RECORD="{\"role\":\"$role\",\"engine\":\"$eng\",\"exempt\":true,\"reason\":\"employer-paid, unmetered for the captain\"}"
+    return 0
+  fi
+  budget_read || return $?
+  BUDGET_STAMP="Claude weekly ceiling at mint: $(ceiling_said) (role $role, engine $eng).
+weekly: $BUDGET_WEEKLY_SAID    source: $BUDGET_SOURCE    age: $BUDGET_AGE
+reset: $BUDGET_RESET"
+  BUDGET_STAMP_RECORD="$("$PY" - "$role" "$eng" "$CLAUDE_CEILING" "$BUDGET_JSON" <<'PY'
+import json, sys
+role, engine, ceiling, usage = sys.argv[1:]
+print(json.dumps({"role": role, "engine": engine, "exempt": False,
+                  "ceilingPct": json.loads(ceiling) if ceiling else None,
+                  "usage": json.loads(usage)}))
+PY
+)" || return $?
+}
+
+budget_check() {
+  local role="$1" mission="$2" eng raise command rollback
+  [ -n "$CLAUDE_CEILING" ] || return 0
+  eng="$(engine_for_role "$role")"
+  [ "$eng" = claude ] || return 0
+  local qid qmission qwhat
+  while IFS="$(printf '\t')" read -r qid qmission qwhat; do
+    [ "$qmission" = "$mission" ] || continue
+    say "QUESTION STILL OPEN [$qid] for $mission: $qwhat"
+    say "  record his answer with: $SELF_CMD answered $qid \"<what he said>\""
+    return 10
+  done <<BUDGET_QUESTIONS
+$(open_questions)
+BUDGET_QUESTIONS
+  budget_read || return $?
+  if [ "$BUDGET_WEEKLY" != UNREADABLE ] \
+    && "$PY" -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' "$BUDGET_WEEKLY" "$CLAUDE_CEILING"; then
+    return 0
+  fi
+  if [ "$BUDGET_WEEKLY" = UNREADABLE ]; then
+    printf 'lcars ech: role %s, engine %s: weekly.pct is UNREADABLE (source: %s, age: %s); this seat will not start or resume. UNKNOWN is never unlimited. Re-read with `%s budget`.\n' \
+      "$role" "$eng" "$BUDGET_SOURCE" "$BUDGET_AGE" "$SELF_CMD" >&2
+    return 11
+  fi
+  raise="$("$PY" -c 'import math,sys; print(math.floor(float(sys.argv[1])) + 1)' "$BUDGET_WEEKLY")"
+  if [ "$raise" -le 100 ]; then
+    command="$SELF_CMD record claudeCeilingPct $raise"
+  else
+    command="$SELF_CMD budget --check $role --mission $mission"
+  fi
+  case "$BUDGET_RESET_STATE" in
+    future) rollback="Wait for the reset at $BUDGET_RESET, then re-check this seat." ;;
+    past) rollback="The reported reset at $BUDGET_RESET has already passed, so the reading may be stale or wrong; re-check the reading with \`$SELF_CMD budget\` or use the command above." ;;
+    *) rollback="weekly.resetsAt is UNREADABLE; re-check the reading with \`$SELF_CMD budget\` or use the command above." ;;
+  esac
+  cmd_ask "Claude ceiling reached: role $role, engine $eng, ceiling $(ceiling_said), weekly reading $BUDGET_WEEKLY%; reset $BUDGET_RESET." \
+    --mission "$mission" \
+    --why "This billed seat has NOT started or resumed. The captain owns the declared slice; the ECH cannot raise it." \
+    --command "$command" \
+    --rollback "Nothing started; nothing to undo. $rollback"
+  return 10
+}
+
+cmd_budget() {
+  require_state
+  if [ "${1:-}" = --check ]; then
+    local role="${2:-}" mission="-"
+    engine_role_ok "$role" || die "budget: --check requires one of: $ECH_ROLES."
+    shift 2
+    if [ "${1:-}" = --mission ] && [ -n "${2:-}" ]; then
+      mission="$2"; shift 2
+    fi
+    [ $# -eq 0 ] || die "budget: --check <role> [--mission <mission>]."
+    budget_check "$role" "$mission"
+    return $?
+  fi
+  [ $# -eq 0 ] || die "budget: use budget or budget --check <role> [--mission <mission>]."
+  budget_read || return $?
+  say "Claude weekly ceiling: $(ceiling_said)"
+  say "  weekly: $BUDGET_WEEKLY_SAID    source: $BUDGET_SOURCE    age: $BUDGET_AGE"
+  say "  remaining: $BUDGET_LEFT"
+  say "  reset: $BUDGET_RESET"
+  local role eng model src msrc
+  while IFS="$(printf '\t')" read -r role eng model src msrc; do
+    if [ "$eng" = claude ]; then
+      say "  $role: $eng — BILLED; ceiling applies when declared"
+    else
+      say "  $role: $eng — exempt: employer-paid, unmetered for the captain"
+    fi
+  done <<BUDGET_ENGINES
+$(engine_matrix_rows)
+BUDGET_ENGINES
+}
+
 # engines_recorded — 0 iff the captain's table is already on disk in ANY form.
 # This is what makes the preflight question ASK-ONCE and makes a pre-recorded
 # table suppress it entirely, which is the unattended path: an unattended run
@@ -2471,6 +2681,11 @@ pf_q_number_one() {
     say "6. Number One: applying the recorded choice $choice ($eng); not asking again."
   fi
   if [ "$choice" = "on" ]; then
+    budget_check numberOne "-" || {
+      PF_STOPS=$((PF_STOPS + 1))
+      pf_q_engines
+      return 0
+    }
     out="$(cd "$CWD" && bash "$XO_SCRIPT" on --engine "$eng" --sweep 2>&1)"; rc=$?
   else
     out="$(cd "$CWD" && bash "$XO_SCRIPT" off 2>&1)"; rc=$?
@@ -2809,6 +3024,14 @@ cmd_record() {
   require_state
   local r=""   # S352 — the role named inside an `engines.<role>.…` key
   case "$1" in
+    claudeCeilingPct)
+      local ceiling
+      ceiling="$(ceiling_number "${2-}")" \
+        || die "record: claudeCeilingPct '${2-}' is invalid — requires a whole number from 1–100; 0, >100, negatives, non-numerics and EMPTY are refused."
+      ap_set "$1" "$ceiling" || die "record: could not write claudeCeilingPct"
+      say "recorded claudeCeilingPct"
+      return 0
+      ;;
     captainOnlySteps)
       if [ -n "${2-}" ]; then
         "$PY" "$SELF_DIR/captain-steps.py" "$APJSON" "$MISSIONS" check "$SELF_CMD" "$2" \
@@ -3259,7 +3482,9 @@ cmd_status() {
   local used; used="$(slots_in_use)"
   say "ECH — $CWD"
   say "  spec:     $(ap_j spec)"
-  say "  engine:   $(ap_j engine)"
+  local ceiling_status=""
+  [ -z "$CLAUDE_CEILING" ] || ceiling_status="    ·    Claude ceiling: $(ceiling_said)"
+  say "  engine:   $(ap_j engine)$ceiling_status"
   say "  deadline: $(ap_j deadline)    last forecast: $(ap_j lastForecast)"
   say ""
   say "  scope:"
@@ -3361,6 +3586,7 @@ cmd_drive() {
   local m="${1:?drive: <mission> required}"
   require_state
   mexists "$m" || die "drive: no mission $m in $MISSIONS"
+  budget_check worker "$m" || return $?
   if driver_live "$m"; then
     die "drive: a driver for $m is already live (pid $(ap_j "drivers.$m.pid")) — one driver per mission." 11
   fi
@@ -3394,6 +3620,7 @@ cmd_drive() {
 # _waiter <mission> <log> — internal. Starts the real driver as its own child.
 cmd_waiter() {
   local m="$1" log="$2"
+  budget_check worker "$m" || return $?
   local gt; gt="$(ap_j gateTimeout)"
   [ -n "$gt" ] || gt=600
   LCARS_GATE_TIMEOUT="$gt" bash "$RUN_SCRIPT" drive --mission "$m" >>"$log" 2>&1 </dev/null &
@@ -5796,6 +6023,23 @@ cmd_exec() {
   esac
   local target="$SKILLS_DIR/$script"
   [ -f "$target" ] || die "exec: no such script in this LCARS clone: $target"
+  local role="" mission="-" prev="" arg
+  case "$script:${1:-}" in
+    lcars-run/run.sh:plan-review) role=reviewer ;;
+    lcars-run/run.sh:drive|lcars-run/run.sh:research|lcars-run/run.sh:validate|lcars-run/run.sh:estimate|lcars-run/run.sh:plan|lcars-run/run.sh:implement|lcars-run/run.sh:implement-ticket)
+      role=worker ;;
+    lcars-xo/xo.sh:on|lcars-xo/xo.sh:evaluate|lcars-xo/xo.sh:recheck)
+      role=numberOne ;;
+  esac
+  if [ -n "$role" ] && [ -n "$CLAUDE_CEILING" ]; then
+    require_state
+    for arg in "$@"; do
+      [ "$prev" != --mission ] || mission="$arg"
+      case "$arg" in --mission=*) mission="${arg#--mission=}" ;; esac
+      prev="$arg"
+    done
+    budget_check "$role" "$mission" || return $?
+  fi
   exec bash "$target" "$@"
 }
 
@@ -6539,6 +6783,7 @@ cmd_delegate() {
   if [ "$tier" = "T0" ]; then
     die "delegate: $unit is T0 — T0 is yours to do and there is no delegate to mint. If that judgement has changed, re-tier it: \`$SELF_CMD tier $unit --tier T1|T2 --why \"<reason>\"\` (re-tiering appends; the T0 call survives in the ledger)."
   fi
+  budget_check delegate "$unit" || return $?
 
   # MINTING TWICE IS THE DEFECT, NOT AN ERROR. Two briefs for one unit is how
   # two delegates end up doing the same work, which is the exact failure the
@@ -6943,7 +7188,7 @@ PYALLOC
   # S352 adds three parts every brief now carries: the engine stamp, the
   # front-door clause and the two-list sign-off. RECORDED BY THE MINTER — the
   # record is what a reader consults, never a grep of the rendered file.
-  local parts="\"output-format\",\"verbs\",\"boundaries\",\"tier-contract\",\"summaries-only\",\"ech-gate\",\"workspace\",\"artifacts\",\"beat\",\"engine-stamp\",\"front-door\",\"two-list-signoff\""
+  local parts="\"output-format\",\"verbs\",\"boundaries\",\"tier-contract\",\"summaries-only\",\"ech-gate\",\"workspace\",\"artifacts\",\"beat\",\"engine-stamp\",\"front-door\",\"two-list-signoff\",\"budget-stamp\""
   [ "$gsrc" = "none" ] || parts="\"goal\",$parts"
   if [ "$tier" = "T2" ]; then
     parts="$parts,\"fresh-tester\",\"tester-deliverable\",\"t1-inherited\""
@@ -7109,6 +7354,31 @@ Its row SUBSTITUTED too: \`$(inert "$tstrec")\` is what was recorded for it and
 is **not installed** here, so this run resolved it to \`$(inert "$tsteng")\` —
 again the machine's resolution, not a choice anybody made."
     fi
+  fi
+
+  local budget_record tester_budget_record="null"
+  budget_stamp delegate "$deleng" || return $?
+  budget_record="$BUDGET_STAMP_RECORD"
+  estamp="$estamp
+
+$BUDGET_STAMP
+
+Before starting or resuming this seat, or opening another one, re-check its role:
+
+    bash $SELF budget --check delegate --mission $unit
+
+Only exit 0 permits that seat. Exit 10 records a captain question; exit 11
+refuses an unreadable allowance. Do not start that seat on either refusal."
+  if [ "$tier" = T2 ]; then
+    budget_stamp tester "$tsteng" || return $?
+    tester_budget_record="$BUDGET_STAMP_RECORD"
+    estamp="$estamp
+
+$BUDGET_STAMP
+
+Before opening or resuming your tester:
+
+    bash $SELF budget --check tester --mission $unit"
   fi
 
   # ==== S352: {{FRONT_DOOR}} — the front-door clause ========================
@@ -7307,10 +7577,10 @@ PYREND
 
   ap_lock
   "$PY" - "$APJSON" "$did" "$unit" "$tier" "$bpath" "$at" "$parts" "$gsrc" "$mid" "$brel" "$BEAT_LIMIT" \
-        "$deleng" "$delmodel" "$delrec" "$delsub" <<'PY'
+        "$deleng" "$delmodel" "$delrec" "$delsub" "$budget_record" "$tester_budget_record" <<'PY'
 import json, os, sys
 (f, did, unit, tier, bpath, at, parts, gsrc, mid, brel, blim,
- deleng, delmodel, delrec, delsub) = sys.argv[1:16]
+ deleng, delmodel, delrec, delsub, budget, tester_budget) = sys.argv[1:18]
 try:
     d = json.load(open(f))
 except Exception:
@@ -7336,6 +7606,8 @@ ds[did] = {"id": did, "unit": unit, "tier": tier, "briefPath": bpath,
            # nothing downstream greps the rendered brief to learn which engine
            # a delegate was told to run on.
            "engine": deleng, "model": delmodel,
+           "budget": json.loads(budget),
+           **({"testerBudget": json.loads(tester_budget)} if tester_budget != "null" else {}),
            # AND THE ROW THAT WAS *RECORDED*, WHICH IS NOT ALWAYS THE ONE THAT
            # RAN (S352 fix round 1, D8). With `copilot` recorded and absent, the
            # matrix resolves the row to claude — a FREE row turned into a BILLED
@@ -8236,6 +8508,7 @@ STATUS_DELEGATES_EOF
 # ==========================================================================
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
+ceiling_read
 case "$SUB" in
   init)        cmd_init "$@" ;;
   preflight)   cmd_preflight "$@" ;;
@@ -8246,6 +8519,7 @@ case "$SUB" in
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
   engines)     cmd_engines "$@" ;;
+  budget)      cmd_budget "$@" ;;
   tier)        cmd_tier "$@" ;;
   delegate)    cmd_delegate "$@" ;;
   delegates)   cmd_delegates "$@" ;;

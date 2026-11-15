@@ -263,6 +263,345 @@ PY
 # MODEL, which is the one confusion that would make these assertions lie.
 eng_col() { printf '%s\n' "$1" | awk -v r="$2" -v c="$3" '$1==r {print $c; exit}'; }
 
+# The public seams are record, budget, delegate, drive and answered. Only the
+# allowance endpoint is faked; the reader, engine resolver and ledger are real.
+s356_case() { [ -z "${LCARS_S356_CASE:-}" ] || [ "$LCARS_S356_CASE" = "$1" ]; }
+s356_repo() {
+  local r; r="$(new_repo)"; ap_init "$r"
+  ech "$r" record engines.delegate.engine claude >/dev/null
+  echo "$r"
+}
+cat >"$STUBS/usage-curl" <<'SH'
+#!/usr/bin/env bash
+out=""
+printf 'usage request\n' >>"$S356_CURL_LOG"
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift ;; esac
+  shift
+done
+if [ -n "${S356_RESET-2030-01-02T00:00:00Z}" ]; then
+  printf '{"seven_day":{"utilization":%s,"resets_at":"%s"}}\n' \
+    "${S356_WEEKLY:-40}" "${S356_RESET-2030-01-02T00:00:00Z}" >"$out"
+else
+  printf '{"seven_day":{"utilization":%s}}\n' "${S356_WEEKLY:-40}" >"$out"
+fi
+printf '200'
+SH
+chmod +x "$STUBS/usage-curl"
+s356_ech() {
+  local r="$1"; shift
+  CHAIN_CURL_BIN="$STUBS/usage-curl" \
+  CHAIN_KEYCHAIN_CMD="printf '{}'" CLAUDE_CODE_OAUTH_TOKEN=s356-fake-token \
+  CHAIN_CACHE_DIR="$r/.git/lcars/test-usage-${S356_WEEKLY:-40}" \
+  CHAIN_NOW="${S356_NOW:-1893456000}" ech "$r" "$@"
+}
+export S356_CURL_LOG="$TMPROOT/usage-curl.log"
+: >"$S356_CURL_LOG"
+export CHAIN_CURL_BIN="$STUBS/usage-curl"
+export CHAIN_KEYCHAIN_CMD="printf '{}'"
+export CLAUDE_CODE_OAUTH_TOKEN=s356-fake-token
+export CHAIN_CACHE_DIR="$TMPROOT/default-usage"
+export CHAIN_NOW=1893456000
+
+if [ -z "${LCARS_DELEGATION_FOCUS:-}" ] || [ "${LCARS_DELEGATION_FOCUS:-}" = s356 ]; then
+if s356_case 1; then
+  printf '\n== S356/1. declared ceiling and live budget ==\n'
+  r356="$(s356_repo)"
+  out="$(s356_ech "$r356" record claudeCeilingPct 60 2>&1)"; rc=$?
+  check "S356/1 record accepts 60 as a number" \
+    "[ $rc -eq 0 ] && [ \"\$(apj '$r356' claudeCeilingPct)\" = 60 ]"
+  for junk356 in 0 101 -1 abc ''; do
+    cp "$r356/.git/lcars/autopilot.json" "$TMPROOT/before356.json"
+    out="$(s356_ech "$r356" record claudeCeilingPct "$junk356" 2>&1)"; rc=$?
+    check "S356/1 invalid '$junk356' refuses BY NAME and records nothing" \
+      "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -q claudeCeilingPct && cmp -s '$TMPROOT/before356.json' '$r356/.git/lcars/autopilot.json'"
+  done
+  out="$(s356_ech "$r356" budget 2>&1)"; rc=$?
+  check "S356/1 budget names ceiling, weekly reading, source, age, remaining and reset" \
+    "[ $rc -eq 0 ] && printf '%s' \"\$out\" | grep -q 'ceiling: 60%' && printf '%s' \"\$out\" | grep -q 'weekly: 40%.*source: endpoint.*age: 0s' && printf '%s' \"\$out\" | grep -q 'remaining: 20 percentage points' && printf '%s' \"\$out\" | grep -q '2030-01-02T00:00:00Z'"
+  printf '%s\n' "$out"
+fi
+if s356_case 2; then
+  printf '\n== S356/2. unset is no ceiling, never zero ==\n'
+  r356="$(s356_repo)"
+  out="$(S356_WEEKLY=100 s356_ech "$r356" budget --check delegate --mission M0 2>&1)"; rc=$?
+  check "S356/2 an undeclared ceiling never gates, even at 100%" \
+    "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+  out="$(S356_WEEKLY=100 s356_ech "$r356" budget 2>&1)"
+  check "S356/2 budget says NO CEILING and no bounded remaining amount" \
+    "printf '%s' \"\$out\" | grep -q 'NO CEILING' && printf '%s' \"\$out\" | grep -q 'remaining: not bounded' && ! printf '%s' \"\$out\" | grep -q 'ceiling: 0%'"
+  printf '%s\n' "$out"
+fi
+if s356_case 3; then
+  printf '\n== S356/3. billed seat under ceiling proceeds silently ==\n'
+  r356="$(s356_repo)"
+  s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+  out="$(S356_WEEKLY=59 s356_ech "$r356" budget --check delegate --mission M0 2>&1)"; rc=$?
+  check "S356/3 59% under 60% permits the billed delegate silently" \
+    "[ $rc -eq 0 ] && [ -z \"\$out\" ] && [ \"\$(apj '$r356' questions)\" = '{}' ]"
+  printf 'S356/3 billed delegate at 59%% / 60%%: exit %s, output bytes %s\n' "$rc" "${#out}"
+fi
+if s356_case 4; then
+  printf '\n== S356/4. at and over park through ask, before mint or drive ==\n'
+  for pct356 in 60 61; do
+    r356="$(s356_repo)"
+    s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+    s356_ech "$r356" tier M0 --tier T1 --why "budget proof" >/dev/null
+    out="$(S356_WEEKLY="$pct356" s356_ech "$r356" delegate M0 2>&1)"; rc=$?
+    check "S356/4 $pct356% parks delegate with exit 10 before any brief or delegate record" \
+      "[ $rc -eq 10 ] && [ -z \"\$(apj '$r356' delegates)\" ] && [ ! -d '$r356/.git/lcars/delegates' ]"
+    check "S356/4 question names role, engine, ceiling, reading and reset; offers exact raise command" \
+      "printf '%s' \"\$(apj '$r356' questions.q1.what)\" | grep -q 'delegate.*claude.*60%.*$pct356%.*2030-01-02T00:00:00Z' && printf '%s' \"\$out\" | grep -q 'record claudeCeilingPct $((pct356 + 1))' && [ \"\$(apj '$r356' pending.id)\" = q1 ]"
+    S356_WEEKLY="$pct356" s356_ech "$r356" delegate M0 >/dev/null 2>&1
+    check "S356/4 repeated park reuses the same open question" \
+      "[ -z \"\$(apj '$r356' questions.q2)\" ]"
+    printf '%s\n' "$out"
+  done
+  r356="$(s356_repo)"; new_mission "$r356" u356 implement
+  s356_ech "$r356" record engines.worker.engine claude >/dev/null
+  s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+  : >"$STUB_LOG"
+  out="$(S356_WEEKLY=60 s356_ech "$r356" drive u356 2>&1)"; rc=$?
+  check "S356/4 a billed worker drive parks before starting anything" \
+    "[ $rc -eq 10 ] && ! grep -q 'run.sh' '$STUB_LOG' && [ -z \"\$(apj '$r356' drivers)\" ] && [ ! -d '$r356/.git/lcars/autopilot' ] && printf '%s' \"\$(apj '$r356' questions.q1.what)\" | grep -q 'worker.*claude'"
+  # A relocated clone lets the generic exec door reach inert scripts, never a
+  # live stage, while exercising the same ECH dispatcher and budget reader.
+  mkdir -p "$TMPROOT/exec356"
+  cp -R "$REPO_ROOT/skills" "$TMPROOT/exec356/skills"
+  for row356 in 'worker lcars-run/run.sh drive' 'reviewer lcars-run/run.sh plan-review' 'numberOne lcars-xo/xo.sh on'; do
+    read -r role356 target356 verb356 <<<"$row356"
+    stub "$TMPROOT/exec356/skills/$target356" 0
+    r356="$(s356_repo)"
+    s356_ech "$r356" record "engines.$role356.engine" claude >/dev/null
+    s356_ech "$r356" record claudeCeilingPct 40 >/dev/null
+    : >"$STUB_LOG"
+    out="$(ech_at "$TMPROOT/exec356/skills/lcars-eeh/ech.sh" "$r356" exec "$target356" "$verb356" --mission M0 2>&1)"; rc=$?
+    check "S356/4 exec cannot bypass the ceiling for a $role356 seat" \
+      "[ $rc -eq 10 ] && ! grep -q '$target356' '$STUB_LOG' && printf '%s' \"\$(apj '$r356' questions.q1.what)\" | grep -q 'role $role356, engine claude'"
+  done
+  r356="$(s356_repo)"
+  for row356 in 'push.mode local-only' 'numberOne.choice on' 'numberOne.engine claude' 'engines.numberOne.engine claude' 'claudeCeilingPct 40'; do
+    read -r key356 value356 <<<"$row356"
+    s356_ech "$r356" record "$key356" "$value356" >/dev/null
+  done
+  : >"$STUB_LOG"
+  out="$(COPILOT_ALLOW_ALL=true s356_ech "$r356" preflight 2>&1)"; rc=$?
+  check "S356/4 preflight's existing Number One application cannot start a billed seat past ceiling" \
+    "[ $rc -eq 10 ] && ! grep -q 'xo.sh on' '$STUB_LOG' && printf '%s' \"\$out\" | grep -q 'role numberOne, engine claude'"
+fi
+if s356_case 5; then
+  printf '\n== S356/5. all unmetered roles are exempt, even at 100%% ==\n'
+  : >"$S356_CURL_LOG"
+  r356="$(new_repo)"; ap_init "$r356"
+  s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+  for role356 in orchestrator delegate worker tester reviewer numberOne; do
+    out="$(S356_WEEKLY=100 s356_ech "$r356" budget --check "$role356" --mission M0 2>&1)"; rc=$?
+    check "S356/5 $role356 on copilot is never gated and is silent" \
+      "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+  done
+  check "S356/5 exempt seats never even request a Claude reading" "[ ! -s '$S356_CURL_LOG' ]"
+  out="$(S356_WEEKLY=100 s356_ech "$r356" budget 2>&1)"
+  check "S356/5 budget names exempt roles AND the employer-paid reason" \
+    "printf '%s' \"\$out\" | grep -q 'worker: copilot.*exempt: employer-paid, unmetered'"
+  printf '%s\n' "$out"
+fi
+if s356_case 6; then
+  printf '\n== S356/6. unreadable weekly refuses only the billed seat ==\n'
+  r356="$(s356_repo)"
+  s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+  out="$(S356_WEEKLY=null s356_ech "$r356" budget --check delegate --mission M0 2>&1)"; rc=$?
+  check "S356/6 unreadable weekly.pct refuses billed delegate BY NUMBER with exit 11" \
+    "[ $rc -eq 11 ] && printf '%s' \"\$out\" | grep -q 'delegate.*claude.*weekly.pct.*UNREADABLE' && [ \"\$(apj '$r356' questions)\" = '{}' ]"
+  printf '%s\n' "$out"
+  out="$(S356_WEEKLY=null s356_ech "$r356" budget --check tester --mission M0 2>&1)"; rc=$?
+  check "S356/6 CONTROL unmetered tester in SAME repo still proceeds silently" \
+    "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+  printf 'S356/6 unmetered tester with unreadable weekly: exit %s, output bytes %s\n' "$rc" "${#out}"
+  out="$(S356_WEEKLY=null s356_ech "$r356" budget 2>&1)"; rc=$?
+  check "S356/6 report never calls an unreadable bounded slice unlimited" \
+    "[ $rc -eq 0 ] && printf '%s' \"\$out\" | grep -q 'remaining: UNREADABLE (weekly.pct)' && ! printf '%s' \"\$out\" | grep -q 'remaining: not bounded'"
+fi
+if s356_case 7; then
+  printf '\n== S356/7. malformed ceiling degrades, never silences mission watchdog ==\n'
+  r356="$(s356_repo)"; new_mission "$r356" u356 implement
+  python3 - "$r356/.git/lcars/missions/u356/state.json" <<'PY'
+import json, sys
+f = sys.argv[1]
+d = json.load(open(f))
+d.update(failedStage="align", failedAt=1893450000, failedReason="boom")
+json.dump(d, open(f, "w"))
+PY
+  s356_ech "$r356" stalled >"$TMPROOT/clean356.out" 2>"$TMPROOT/clean356.err"; clean356=$?
+  ( export LCARS_ECH_CLAUDE_CEILING_PCT=abc; s356_ech "$r356" stalled ) \
+    >"$TMPROOT/bad356.out" 2>"$TMPROOT/bad356.err"; bad356=$?
+  check "S356/7 CONTROL no delegates, failed mission, exit 0 clean and malformed, byte-identical stdout" \
+    "[ -z \"\$(apj '$r356' delegates)\" ] && grep -q 'FAILED AND IDLE' '$TMPROOT/clean356.out' && [ $clean356 -eq 0 ] && [ $bad356 -eq 0 ] && cmp -s '$TMPROOT/clean356.out' '$TMPROOT/bad356.out'"
+  check "S356/7 malformed ceiling warns by name on stderr and applies the 100% DEFAULT" \
+    "grep -q 'WARNING.*claudeCeilingPct.*abc.*REJECTED.*100% DEFAULT' '$TMPROOT/bad356.err'"
+  cat "$TMPROOT/bad356.out" "$TMPROOT/bad356.err"
+  out="$(LCARS_ECH_CLAUDE_CEILING_PCT=abc s356_ech "$r356" budget 2>/dev/null)"; rc=$?
+  check "S356/7 applied default is also named IN BAND" \
+    "[ $rc -eq 0 ] && printf '%s' \"\$out\" | grep -q '100%.*DEFAULT.*abc.*REJECTED'"
+  printf '%s\n' "$out"
+  for bad356 in '""' null true '{"oops":1}' 0 101; do
+    python3 - "$r356/.git/lcars/autopilot.json" "$bad356" <<'PY'
+import json, sys
+f, raw = sys.argv[1:]
+d = json.load(open(f))
+d["claudeCeilingPct"] = json.loads(raw)
+json.dump(d, open(f, "w"))
+PY
+    out="$(S356_WEEKLY=100 s356_ech "$r356" budget --check delegate --mission M0 2>&1)"; rc=$?
+    check "S356/7 malformed persisted $bad356 never becomes unlimited" \
+      "[ $rc -eq 10 ] && printf '%s' \"\$out\" | grep -q 'WARNING.*claudeCeilingPct' && printf '%s' \"\$out\" | grep -q '100%'"
+    s356_ech "$r356" answered pending "repairing malformed value" >/dev/null 2>&1
+  done
+fi
+if s356_case 8; then
+  printf '\n== S356/8. minted brief carries its own budget or exemption ==\n'
+  for engine356 in claude copilot; do
+    r356="$(s356_repo)"
+    s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+    s356_ech "$r356" record engines.delegate.engine "$engine356" >/dev/null
+    s356_ech "$r356" tier M0 --tier T1 --why "budget proof" >/dev/null
+    S356_WEEKLY=40 s356_ech "$r356" delegate M0 >"$TMPROOT/mint356.out" 2>&1; rc=$?
+    brief356="$(apj "$r356" delegates.d1.briefPath)"
+    if [ "$engine356" = claude ]; then
+      check "S356/8 billed brief stamps ceiling, reading, source, age and reset AT MINT" \
+        "[ $rc -eq 0 ] && grep -q 'Claude weekly ceiling at mint: 60%' '$brief356' && grep -q 'weekly: 40%.*source: endpoint.*age: 0s' '$brief356' && grep -q 'reset: 2030-01-02T00:00:00Z' '$brief356' && [ \"\$(apj '$r356' delegates.d1.budget.ceilingPct)\" = 60 ] && python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))[\"delegates\"][\"d1\"][\"budget\"][\"usage\"][\"weekly\"][\"pct\"] == 40' '$r356/.git/lcars/autopilot.json'"
+    else
+      check "S356/8 unmetered brief says exempt rather than a number that binds it" \
+        "[ $rc -eq 0 ] && grep -q 'delegate.*copilot.*exempt.*employer-paid' '$brief356' && ! grep -q 'Claude weekly ceiling at mint: 60%' '$brief356' && [ \"\$(apj '$r356' delegates.d1.budget.exempt)\" = true ]"
+    fi
+    [ ! -f "$brief356" ] || grep -E 'ceiling at mint|weekly:|reset:|exempt' "$brief356"
+    out="$(s356_ech "$r356" status 2>&1)"
+    check "S356/8 status adds ceiling to the EXISTING engine line only" \
+      "printf '%s' \"\$out\" | grep -q '^  engine:.*Claude ceiling: 60%' && [ \"\$(printf '%s' \"\$out\" | grep -c 'Claude ceiling:')\" = 1 ]"
+  done
+fi
+if s356_case 9; then
+  printf '\n== S356/9. every offered park command terminates and the park is leavable ==\n'
+  r356="$(s356_repo)"
+  s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+  s356_ech "$r356" tier M0 --tier T1 --why "budget proof" >/dev/null
+  out="$(S356_WEEKLY=60 s356_ech "$r356" delegate M0 2>&1)"; rc=$?
+  command356="$(apj "$r356" questions.q1.command)"
+  read -r -a args356 <<<"$command356"
+  raised356="$(S356_WEEKLY=60 s356_ech "$r356" "${args356[@]:1}" 2>&1)"; raisedrc356=$?
+  check "S356/9 the EXACT offered record command terminates and raises to 61" \
+    "[ $rc -eq 10 ] && [ $raisedrc356 -eq 0 ] && [ \"\$(apj '$r356' claudeCeilingPct)\" = 61 ]"
+  printf '%s -> %s\n' "$command356" "$raised356"
+  out="$(S356_WEEKLY=60 s356_ech "$r356" delegate M0 2>&1)"; rc=$?
+  check "S356/9 raising alone does not silently answer the open question" \
+    "[ $rc -eq 10 ] && [ -z \"\$(apj '$r356' delegates)\" ] && printf '%s' \"\$out\" | grep -q 'answered q1'"
+  out="$(S356_WEEKLY=60 s356_ech "$r356" answered q1 'Raised to 61; proceed' 2>&1)"; rc=$?
+  check "S356/9 real answered closes q1, keeps its history and clears the pending MIRROR" \
+    "[ $rc -eq 0 ] && [ -n \"\$(apj '$r356' questions.q1.answeredAt)\" ] && [ \"\$(apj '$r356' pending)\" = '{}' ]"
+  printf '%s\n' "$out"
+  out="$(S356_WEEKLY=60 s356_ech "$r356" delegate M0 2>&1)"; rc=$?
+  check "S356/9 re-run after raising AND answering really mints the seat brief" \
+    "[ $rc -eq 0 ] && [ \"\$(apj '$r356' delegates.d1.status)\" = minted ]"
+  printf '%s\n' "$out"
+  r356="$(s356_repo)"
+  s356_ech "$r356" record claudeCeilingPct 100 >/dev/null
+  S356_WEEKLY=100 s356_ech "$r356" budget --check delegate --mission M0 >/dev/null 2>&1
+  command356="$(apj "$r356" questions.q1.command)"
+  read -r -a args356 <<<"$command356"
+  out="$(S356_WEEKLY=100 s356_ech "$r356" "${args356[@]:1}" 2>&1)"; rc=$?
+  check "S356/9 at 100 the offered recheck terminates, never offers invalid record 101" \
+    "[ $rc -eq 10 ] && ! printf '%s' \"\$command356\" | grep -q 'record.*101'"
+  s356_ech "$r356" answered q1 'Waited for reset' >/dev/null
+  out="$(S356_WEEKLY=1 S356_NOW=1893542401 s356_ech "$r356" "${args356[@]:1}" 2>&1)"; rc=$?
+  check "S356/9 reset path: same offered recheck proceeds after real answered and a fresh low reading" \
+    "[ $rc -eq 0 ] && [ -z \"\$out\" ]"
+  printf 'S356/9 after reset, %s: exit %s, output bytes %s\n' "$command356" "$rc" "${#out}"
+fi
+if s356_case 10; then
+  printf '\n== S356/10. no-ceiling screens remain byte-identical; discoverable contract ==\n'
+  base356="$TMPROOT/baseline356"
+  mkdir -p "$base356"
+  cp -R "$REPO_ROOT/skills" "$base356/skills"
+  git -C "$REPO_ROOT" show HEAD:skills/lcars-eeh/ech.sh >"$base356/skills/lcars-eeh/ech.sh"
+  r356="$(new_repo)"; ap_init "$r356"
+  for verb356 in status next stalled "watch status"; do
+    ech_at "$base356/skills/lcars-eeh/ech.sh" "$r356" $verb356 >"$TMPROOT/before356.out" 2>"$TMPROOT/before356.err"; before356=$?
+    s356_ech "$r356" $verb356 >"$TMPROOT/after356.out" 2>"$TMPROOT/after356.err"; after356=$?
+    check "S356/10 NO CEILING: $verb356 stdout, stderr and exit are BYTE-IDENTICAL to pre-session HEAD" \
+      "cmp -s '$TMPROOT/before356.out' '$TMPROOT/after356.out' && cmp -s '$TMPROOT/before356.err' '$TMPROOT/after356.err' && [ $before356 -eq $after356 ] && [ $after356 -eq 0 ]"
+  done
+  out="$(s356_ech "$r356" help 2>&1)"
+  check "S356/10 CLI help exposes budget and the seat check" \
+    "printf '%s' \"\$out\" | grep -q 'budget.*check' && printf '%s' \"\$out\" | grep -q claudeCeilingPct"
+  check "S356/10 ceiling rule has ONE home in Who runs what, not a second doctrine" \
+    "[ \"\$(grep -c 'claudeCeilingPct' '$REPO_ROOT/skills/lcars-eeh/DELEGATION.md')\" = 1 ]"
+fi
+if s356_case 11; then
+  printf '\n== S356fix1/D3. reset advice is truthful and every park is leavable ==\n'
+  for resetcase356 in past future unreadable absent; do
+    case "$resetcase356" in
+      past) reset356=2026-11-01T00:00:00Z ;;
+      future) reset356=2030-01-02T00:00:00Z ;;
+      unreadable) reset356=not-a-reset ;;
+      absent) reset356="" ;;
+    esac
+    # Each arm owns a mission: an open question must not mask a fresh park.
+    r356="$(s356_repo)"
+    mid356="reset-$resetcase356"
+    new_mission "$r356" "$mid356" implement
+    s356_ech "$r356" record missions.RESET.id "$mid356" >/dev/null
+    s356_ech "$r356" record claudeCeilingPct 60 >/dev/null
+    out="$(S356_WEEKLY=70 S356_RESET="$reset356" s356_ech "$r356" budget --check delegate --mission "$mid356" 2>&1)"; rc=$?
+    check "S356fix1/D3 $resetcase356 reset still parks with exit 10 on its own mission" \
+      "[ $rc -eq 10 ] && [ \"\$(apj '$r356' questions.q1.mission)\" = '$mid356' ] && ! printf '%s' \"\$out\" | grep -q 'QUESTION STILL OPEN'"
+    case "$resetcase356" in
+      past)
+        check "S356fix1/D3 expired reset says already passed and stale or wrong, never wait" \
+          "printf '%s' \"\$out\" | grep -q 'reported reset.*has already passed' && printf '%s' \"\$out\" | grep -q 'stale or wrong' && ! printf '%s' \"\$out\" | grep -qi 'wait for the reset at' && printf '%s' \"\$out\" | grep -q 're-check the reading'"
+        ;;
+      future)
+        check "S356fix1/D3 CONTROL future reset keeps the EXACT existing rollback wording" \
+          "printf '%s\n' \"\$out\" | grep -Fxq '  rollback: Nothing started; nothing to undo. Wait for the reset at 2030-01-02T00:00:00Z, then re-check this seat.'"
+        ;;
+      *)
+        check "S356fix1/D3 $resetcase356 reset names unreadable weekly.resetsAt and never advises waiting" \
+          "printf '%s' \"\$out\" | grep -q 'weekly.resetsAt.*UNREADABLE' && ! printf '%s' \"\$out\" | grep -qi 'wait for the reset at' && printf '%s' \"\$out\" | grep -q 're-check the reading'"
+        ;;
+    esac
+    printf 'S356fix1/D3 %s: budget --check delegate --mission %s -> exit %s\n%s\n' "$resetcase356" "$mid356" "$rc" "$out"
+    command356="$(apj "$r356" questions.q1.command)"
+    check "S356fix1/D3 $resetcase356 park offers the exact raise record command" \
+      "[ \"\$command356\" = 'lcars-ech record claudeCeilingPct 71' ] && printf '%s' \"\$out\" | grep -Fq \"\$command356\""
+    read -r -a args356 <<<"$command356"
+    raised356="$(S356_WEEKLY=70 S356_RESET="$reset356" s356_ech "$r356" "${args356[@]:1}" 2>&1)"; raisedrc356=$?
+    answered356="$(s356_ech "$r356" answered q1 'Raised to 71; re-check the seat' 2>&1)"; answeredrc356=$?
+    out="$(S356_WEEKLY=70 S356_RESET="$reset356" s356_ech "$r356" budget --check delegate --mission "$mid356" 2>&1)"; rc=$?
+    check "S356fix1/D3 $resetcase356 exact raise plus real answered clears the way silently" \
+      "[ $raisedrc356 -eq 0 ] && [ $answeredrc356 -eq 0 ] && [ \"\$(apj '$r356' claudeCeilingPct)\" = 71 ] && [ \"\$(apj '$r356' pending)\" = '{}' ] && [ $rc -eq 0 ] && [ -z \"\$out\" ]"
+    printf 'S356fix1/D3 %s: %s -> exit %s: %s; answered q1 -> exit %s; re-check -> exit %s, output bytes %s\n' \
+      "$resetcase356" "$command356" "$raisedrc356" "$raised356" "$answeredrc356" "$rc" "${#out}"
+  done
+fi
+if s356_case 12; then
+  printf '\n== S356fix1/D1. ceiling is a whole number from 1 to 100 ==\n'
+  r356="$(s356_repo)"
+  for junk356 in 60.5 1.0 .5 1e2 0 101 -1 abc ''; do
+    cp "$r356/.git/lcars/autopilot.json" "$TMPROOT/beforefix1356.json"
+    out="$(s356_ech "$r356" record claudeCeilingPct "$junk356" 2>&1)"; rc=$?
+    check "S356fix1/D1 '$junk356' refuses naming field AND value, recording nothing" \
+      "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -Fq \"claudeCeilingPct '\$junk356'\" && cmp -s '$TMPROOT/beforefix1356.json' '$r356/.git/lcars/autopilot.json'"
+    printf "S356fix1/D1 record claudeCeilingPct '%s' -> exit %s: %s\n" "$junk356" "$rc" "$out"
+  done
+  for ceiling356 in 1 60 100; do
+    out="$(s356_ech "$r356" record claudeCeilingPct "$ceiling356" 2>&1)"; rc=$?
+    check "S356fix1/D1 CONTROL integer $ceiling356 is accepted and recorded" \
+      "[ $rc -eq 0 ] && [ \"\$(apj '$r356' claudeCeilingPct)\" = '$ceiling356' ]"
+    printf 'S356fix1/D1 record claudeCeilingPct %s -> exit %s: %s; recorded value %s\n' \
+      "$ceiling356" "$rc" "$out" "$(apj "$r356" claudeCeilingPct)"
+  done
+fi
+fi
+
+if [ "${LCARS_DELEGATION_FOCUS:-}" != s356 ]; then
 if [ "${LCARS_DELEGATION_FOCUS:-}" != s354 ]; then
 printf '\n== DELEGATION.md — the shared doc ==\n'
 
@@ -4498,6 +4837,8 @@ expected = sys.argv[2].encode('utf-8')
 assert expected in data, (expected, data)
 PY"
 fi
+
+fi # non-S356 suites
 
 printf '\n== ZERO SPEND ==\n'
 

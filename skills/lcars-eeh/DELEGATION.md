@@ -407,6 +407,27 @@ way, not a preference:
 - every other role = **copilot**.
 - **A Claude role is only ever a recorded choice.**
 
+**The captain's declared slice of the weekly Claude allowance** is set with
+`lcars-ech record claudeCeilingPct <1-100>`; unset means **NO CEILING**, never
+zero. `lcars-ech budget` reports the ceiling, live weekly reading, source, age,
+remaining slice, reset time and which resolved roles it binds. It binds **only
+billed Claude roles**; employer-paid, unmetered Copilot roles are **exempt**,
+including when the Claude reading is unreadable. Before starting or resuming
+any seat, run `lcars-ech budget --check <role> --mission <unit>`: only exit 0
+permits it. Under the ceiling is silent; at or above it parks that seat through
+the existing `ask` question ledger (exit 10), naming the role, engine, ceiling,
+reading and reset, with the exact command to raise the slice or a recheck after
+the stated reset time. Run the offered command and close the question through
+`answered <id> "<answer>"` before retrying. An unreadable **weekly.pct** refuses
+only that billed seat (exit 11), never grants unlimited use. Delegate minting
+and mission-drive entry points enforce the same check; manually opened seats
+must run it too. Every minted brief records its mint-time ceiling and reading,
+or its role's exemption. A malformed persisted value (or
+`LCARS_ECH_CLAUDE_CEILING_PCT` override) degrades to the documented **100%**
+default, warns on stderr and on reports applying it, and never silences an
+unrelated watchdog report. This is an admission check, not a reservation or a
+mid-session cutoff: it starts no engine and stops no running seat.
+
 **A DEFAULT IS PRINTED, NEVER SILENT.** Every row `lcars-ech engines` prints
 says whether its engine came out of the record or out of the paragraph above. A
 default nobody can see is indistinguishable from a setting somebody made, and
