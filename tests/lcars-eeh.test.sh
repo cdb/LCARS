@@ -2010,6 +2010,27 @@ check "S358/8. ...and the part it names RESOLVES to prose, through the real reso
 check "S358/8. ...and the heading itself is still byte-identical to the playbook's own line" \
   "qgrep -qFx \"\$(printf '%s\n' \"\$S358_POL_MERGE\" | sed 's/^PLAYBOOK: //; s/ (lcars-eeh docs [a-z-]*)\$//')\" '$S358_HCM'"
 
+# ---------------------------------------------------------------------------
+# S358 FIX ROUND 2 — THE SURFACE BUILT TO ROUTE READERS IS IN THE HELP
+# ---------------------------------------------------------------------------
+# `docs --part-of` exists to tell a reader WHICH part serves the line they are
+# holding. It was undiscoverable: the help listed the part names and `--path`
+# and never named the flag. A routing surface nobody can find routes nobody.
+printf '\n== S358 fix round 2. the help names the flag that routes readers ==\n'
+
+S358F_HELP="$TMPROOT/s358-help.txt"
+s358_docs >"$S358F_HELP" 2>/dev/null
+
+check "S358/9. \`docs\` help names \`--part-of\`, so the routing flag is discoverable" \
+  "qgrep -q -- '--part-of' '$S358F_HELP'"
+check "S358/9. ...in the same shape as \`--path\` — its own line, saying what it does" \
+  "qgrep -qE '^  --part-of .+' '$S358F_HELP' && qgrep -qE '^  --path .+' '$S358F_HELP'"
+check "S358/9. ...and the help still carries the names, the parts and the resolved dir" \
+  "qgrep -q '^  names: ' '$S358F_HELP' && qgrep -q '^  parts: ' '$S358F_HELP' && qgrep -q '^  resolved from: ' '$S358F_HELP'"
+# The flag the help now advertises must actually work when a reader runs it.
+check "S358/9. ...and what it advertises is real — the flag answers for a live heading" \
+  "[ \"\$(s358_partof '$S358R_LAND')\" = ech-land ]"
+
 # --- summary --------------------------------------------------------------
 printf '\nlcars eeh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

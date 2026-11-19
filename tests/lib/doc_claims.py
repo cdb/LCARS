@@ -178,7 +178,7 @@ def command_end(text, match):
 def flags_for(command, verb, tail):
     if command == "lcars-eeh" and verb == "docs":
         code = source("skills/lcars-eeh/eeh.sh")
-        arm = re.search(r'in (--path\|-p)\)', code)
+        arm = re.search(r'in (--path\|-p\)[^\n]*?)esac', code)
         return set(FLAG.findall(arm[1])) if arm else set()
     if command != "lcars-ech" or verb == "exec":
         return None

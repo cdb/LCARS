@@ -189,6 +189,7 @@ HCM_PARTS
     # still prints all of it, and the parts in this order ARE all of it.
     echo "  parts: $(hcm_part_names)"
     echo "  --path prints the resolved absolute path instead of the contents."
+    echo "  --part-of <a WHOLE playbook line> names the part that serves it."
     echo "  resolved from: $SCRIPT_DIR"
     exit 0
   fi

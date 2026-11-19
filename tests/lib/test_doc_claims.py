@@ -187,6 +187,64 @@ class DocClaimsTests(unittest.TestCase):
         self.assertIn(".git/lcars/s357-missing.json", result.stdout)
         self.assertIn("no code I/O reference", result.stdout)
 
+    # --- S358 fix round 2, defect 4: the flag model reads EVERY arm ---------
+    # `lcars-eeh docs` grew a `--part-of` arm in the SAME one-line `case` that
+    # `--path|-p` lives in. The model captured only the first two flags, so the
+    # gate called `--part-of` unaccepted — and the first line of prose that
+    # documented the feature would have turned the build red. Measured by
+    # calling the model directly, not inferred.
+    def test_docs_flag_model_reads_every_arm_of_the_case(self):
+        accepted = doc_claims.flags_for("lcars-eeh", "docs", "")
+        self.assertIn("--path", accepted)
+        self.assertIn("--part-of", accepted)
+
+    # THE KNOWN-GOOD CONTROL, and the one that matters: a regex widened until
+    # it matches anything is worse than the bug it cured. The model must still
+    # REFUSE a flag the code does not have.
+    def test_docs_flag_model_still_rejects_a_flag_the_code_lacks(self):
+        accepted = doc_claims.flags_for("lcars-eeh", "docs", "")
+        self.assertNotIn("--not-a-real-flag", accepted)
+        self.assertNotIn("--tier", accepted)
+        self.assertTrue(
+            accepted <= {"--path", "--part-of"},
+            f"the model accepts flags the case does not declare: {accepted}",
+        )
+
+    # And the consequence, end to end: a prose document may now DOCUMENT the
+    # flag and the gate stays green. Planted into a disposable copy, so nothing
+    # is left behind in the shipped documents.
+    def test_prose_may_document_the_part_of_flag_and_the_gate_stays_green(self):
+        self.plant("Ask `lcars-eeh docs --part-of` with a whole heading line.")
+        result = self.gate()
+        self.assertNotRegex(result.stdout, r"FAIL [^\n]*--part-of")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("KIND flag: checked=", result.stdout)
+        self.assertIn("failed=0; minimum-failures=0", result.stdout)
+
+    # CONTROL for the test above: the plant really does reach the flag checker,
+    # so its green means something. The same sentence with a flag `docs` does
+    # not have must RED, and the diagnosis must name the accepted set.
+    def test_a_bogus_docs_flag_in_prose_still_reds_the_gate(self):
+        location = self.plant(
+            "Ask `lcars-eeh docs --not-a-real-flag` with a whole heading line.")
+        result = self.gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"FAIL {self.docs / location}", result.stdout)
+        self.assertIn("--not-a-real-flag", result.stdout)
+        self.assertIn("docs parser accepts --part-of, --path", result.stdout)
+
+    # REGRESSION GUARD for the previous round's half-fix: the arms must stay on
+    # ONE line, because this literal-matching model is what reads them. The
+    # comment in eeh.sh says so; this makes the claim fail loudly.
+    def test_the_docs_case_arms_stay_on_one_line(self):
+        code = (ROOT / "skills/lcars-eeh/eeh.sh").read_text()
+        # The CODE line, not the comment above it that quotes the same literal.
+        arm = next((line for line in code.splitlines()
+                    if re.match(r"\s*case .* in --path\|-p\)", line)), None)
+        self.assertIsNotNone(arm, "the literal `in --path|-p)` is no longer contiguous")
+        self.assertIn("--part-of)", arm, "the --part-of arm left the one-line case")
+        self.assertIn("esac", arm, "the case no longer closes on its own line")
+
     def test_installer_only_variable_is_unchecked_not_a_fake_contradiction(self):
         location = self.plant("The installer reads `LCARS_BIN_DEST`.")
         result = self.gate()
