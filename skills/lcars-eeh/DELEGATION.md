@@ -301,11 +301,24 @@ A detector keyed on the step number would have accused a delegate that was
 visibly advancing, and a lane that cries wolf is one the ECH learns to skip.
 
 **AND WHAT THIS LANE CANNOT CATCH, SAID IN ITS OWN FOOTER.** It compares the
-delegate's own words. A delegate that loops while **rewording** each beat is not
-caught by it — nothing this product records would show that, since the ECH holds
-no clock, path or working tree of a delegate's beyond the beats it sends. The
-report says so where it reports, BEATING BUT NOT MOVING is the half that still
-catches that shape, and reading the artifacts is the half neither lane can do.
+delegate's own words, and only where the repeats are **consecutive**. Two shapes
+are therefore not named by it. A delegate that loops while **rewording** each
+beat is not caught by it — nothing this product records would show that, since
+the ECH holds no clock, path or working tree of a delegate's beyond the beats it
+sends. Nor is a loop that **alternates** between two or more different reports —
+"ran the scope gate: FAIL" / "reverting, trying the same fix again", round and
+round — because the different beat that *clears* the line is also the beat that
+restarts the tally, so only a cycle of length **one** ever reaches the
+threshold. Measured: that two-beat cycle run four times round scores nothing,
+and one filler beat between repeats hides a real loop just as well. That is the
+price the consecutive rule charges for the false positives it cures, and it is
+why this lane is a NARROW signal and not a loop detector: the loops this factory
+actually produces — gate red → revert → retry, research → plan → research → plan
+— are mostly longer than one beat. The report says so where it reports; a lane
+that stays SILENT prints nothing at all, so this paragraph is where the reader
+of a quiet report learns it. BEATING BUT NOT MOVING is the half that still
+catches both of those shapes while the step is not climbing, and reading the
+artifacts is the half neither lane can do.
 
 **A BROKEN LIMIT DEGRADES; IT DOES NOT REFUSE.** A `LCARS_ECH_BEAT_LIMIT` that
 is not a whole number of seconds — `30m` is the one a model types after reading

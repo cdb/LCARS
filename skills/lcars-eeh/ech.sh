@@ -4055,9 +4055,18 @@ DELEGATE_SILENCE_EOF
   # silence, not a block and not a lack of motion, so it is counted on its own —
   # and the footer states what this lane CANNOT catch, because a quiet lane that
   # the reader believes is exhaustive is itself a false green.
+  # BOTH BLIND SPOTS, NOT JUST THE FIRST (S359 fix round 2). Fix round 1 bought
+  # precision by requiring the repeats to be CONSECUTIVE — the right call, and it
+  # holds — but it bought it with SENSITIVITY, and the shipped text said nothing
+  # about that. Measured by a fresh tester: a perfect two-beat cycle ("ran the
+  # scope gate: FAIL" / "reverting and trying the same fix again") run four times
+  # round scores circles=0, so the lane now only sees a cycle of length ONE and a
+  # single filler beat defeats it. A limit the product gained and never stated is
+  # the same false green as the rewording one, so it is stated in the same
+  # sentence, in the same place, and in DELEGATION.md's own voice beside it.
   if [ "$dc" -gt 0 ]; then
     printf '%s delegate(s) are GOING IN CIRCLES — each line above quotes the work that repeated and names the next action; this is a repetition signal, not a verdict.\n' "$dc"
-    printf '  AND ITS LIMIT, PLAINLY: this lane keys on the delegate reporting THE SAME WORK in the same words. A delegate that loops while REWORDING each beat is NOT caught here — nothing this product records would show it — so BEATING BUT NOT MOVING is the other half of this defence, and your own read of its artifacts is the half neither lane can do.\n'
+    printf '  AND ITS LIMIT, PLAINLY: this lane keys on the delegate reporting THE SAME WORK in the same words, and on those repeats being CONSECUTIVE. Two shapes are therefore not named here. A delegate that loops while REWORDING each beat is NOT caught here — nothing this product records would show it. Nor is a loop that ALTERNATES between two or more different reports ("gate red" / "reverting, trying the same fix again", round and round): one beat of different work restarts the tally, so only a cycle of length ONE ever reaches the threshold, and a single filler beat between repeats is enough to hide a real loop. BEATING BUT NOT MOVING is the other half of this defence and fires on both of those shapes while the step is not climbing, and your own read of its artifacts is the half neither lane can do.\n'
   fi
   return 0
 }

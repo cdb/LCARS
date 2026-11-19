@@ -700,6 +700,100 @@ check "S359/15 the rendered beat example STILL RUNS AS IT STANDS and records ste
   "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$r15/.git/lcars/autopilot.json'))['delegates']['d1']['step'];assert (d['k'],d['n'])==(1,7),d\""
 
 # ==========================================================================
+printf '\n== S359/16. THE PRECISION IT GAINED COST SENSITIVITY, AND IT SAYS SO ==\n'
+# ==========================================================================
+# S359 FIX ROUND 2, AND IT IS AN HONESTY FIX, NOT A MECHANISM ONE. Fix round 1
+# required a circle's repeats to be CONSECUTIVE. That cured three false
+# positives and it holds — but it bought precision with SENSITIVITY, and the
+# product did not say so. MEASURED by a fresh tester: a perfect two-beat cycle
+# ("ran the scope gate: FAIL" / "reverting and trying the same fix again") run
+# FOUR times round scores circles=0. So the lane can now only see a cycle of
+# length ONE, and every realistic loop in this factory — gate red → revert →
+# retry, research → plan → research → plan — alternates between two or more
+# reports and is invisible to it. The tester grepped DELEGATION.md, ech.sh and
+# delegate-brief.md for any statement of that limit: NO MATCHES. This project's
+# own rule is that a lane states its limit WHERE IT REPORTS — the rewording
+# limit already does exactly that — because a quiet lane a reader believes is
+# exhaustive is itself a false green. The consecutive rule is NOT changed here;
+# only what the product says about it.
+S359_R1='9ff5476'
+R1DIR="$TMPROOT/round1"
+R1SH="$R1DIR/skills/lcars-eeh/ech.sh"
+R1DOC="$TMPROOT/round1-DELEGATION.md"
+mkdir -p "$R1DIR" && cp -R "$REPO_ROOT/skills" "$R1DIR/skills" \
+  && git -C "$REPO_ROOT" show "$S359_R1:skills/lcars-eeh/ech.sh" >"$R1SH" 2>/dev/null
+git -C "$REPO_ROOT" show "$S359_R1:skills/lcars-eeh/DELEGATION.md" >"$R1DOC" 2>/dev/null
+check "S359/16 [control] the baseline IS fix round 1 — consecutive repeats, silent about it" \
+  "[ -s '$R1SH' ] && grep -qF 'THE REPEATS MUST BE CONSECUTIVE' '$R1SH' && [ -s '$R1DOC' ]"
+
+# --- (1) THE FOOTER, WHERE THE LANE ITSELF REPORTS -----------------------
+r16="$(circ_loop_repo)"
+ech "$r16" stalled >"$TMPROOT/s16a.out" 2>/dev/null
+check "S359/16 the footer states the lane sees only CONSECUTIVE repetition" \
+  "grep -qi 'consecutive' '$TMPROOT/s16a.out'"
+check "S359/16 ...and names the shape it therefore cannot see: a loop that ALTERNATES" \
+  "grep -qi 'alternat' '$TMPROOT/s16a.out'"
+check "S359/16 ...and points at the lane that DOES still fire on that shape" \
+  "grep -q 'BEATING BUT NOT MOVING' '$TMPROOT/s16a.out'"
+check "S359/16 [known-fail control] fix round 1's own footer said none of it" \
+  "ech_at '$R1SH' '$r16' stalled 2>/dev/null >'$TMPROOT/s16a-r1.out'; grep -q '^GOING IN CIRCLES: d1' '$TMPROOT/s16a-r1.out' && ! grep -qi 'consecutive' '$TMPROOT/s16a-r1.out' && ! grep -qi 'alternat' '$TMPROOT/s16a-r1.out'"
+
+# --- (2) THE PUBLISHED DOC, BESIDE THE REWORDING LIMIT -------------------
+check "S359/16 DELEGATION.md states the same limit beside the rewording one" \
+  "python3 - '$REPO_ROOT/skills/lcars-eeh/DELEGATION.md' <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+sec = s.split('## NO SILENT HOURS', 1)[1].split('\n## ', 1)[0]
+blind = sec.split('AND WHAT THIS LANE CANNOT CATCH', 1)[1].lower()
+assert 'reword' in blind, 'the first blind spot must still be stated'
+assert 'consecutive' in blind, 'the consecutive-only limit must be stated AS A LIMIT'
+assert 'alternat' in blind, 'the alternating-loop shape must be named'
+PY"
+check "S359/16 [known-fail control] fix round 1's doc stated it in no blind spot of its own" \
+  "! python3 - '$R1DOC' <<'PY'
+import sys
+s = open(sys.argv[1]).read()
+blind = s.split('AND WHAT THIS LANE CANNOT CATCH', 1)[1].lower()
+assert 'consecutive' in blind and 'alternat' in blind
+PY"
+
+# --- (3) THE BEHAVIOURAL ANCHOR: THE RUN WHERE THE LIMIT BITES -----------
+# The tester's fixture, in its own shape: a perfect two-beat cycle, four times
+# round, the step never advancing. This is the classic loop of this factory and
+# the lane is silent on it.
+r16b="$(circ_repo)"
+for i16 in 1 2 3 4; do
+  ech "$r16b" beat d1 'ran the scope gate: FAIL - src/other.py out of scope' --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+  ech "$r16b" beat d1 'reverting the change and trying the same fix again'   --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+done
+ech "$r16b" stalled >"$TMPROOT/s16b.out" 2>/dev/null
+sed 's/^/       /' "$TMPROOT/s16b.out"
+check "S359/16 a two-beat cycle run four times is NOT named a circle — the blind spot, measured" \
+  "! grep -q 'GOING IN CIRCLES' '$TMPROOT/s16b.out'"
+check "S359/16 ...and the delegate is NOT invisible: the motion lane still names it" \
+  "grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/s16b.out'"
+# AND WHAT THAT MEANS FOR THE READER OF THIS RUN, PROVEN RATHER THAN ASSERTED.
+# The footer carrying the limit is printed inside `cmd_stalled`'s `dc > 0`
+# branch, so on THIS run — the one where the limit actually bites — the report
+# does not carry it, and DELEGATION.md is the only surface that states it here.
+# Recorded as a measured RESIDUAL and deliberately NOT pinned by an assertion:
+# a later fix that makes the limit print on a SILENT lane must not have to
+# delete a test to do it.
+if grep -qi 'consecutive' "$TMPROOT/s16b.out"; then
+  printf '  \033[33mNOTE\033[0m S359/16 the consecutive-only limit DOES print on a silent circles lane\n'
+else
+  printf '  \033[33mNOTE\033[0m S359/16 RESIDUAL: the limit is stated only where the lane FIRES; on this silent run the report does not carry it (DELEGATION.md does)\n'
+fi
+
+# --- (4) THE KNOWN-GOOD CONTROL: nothing the lane caught is given up -----
+check "S359/16 [known-good] a real CONSECUTIVE loop still fires" \
+  "grep -q '^GOING IN CIRCLES: d1' '$TMPROOT/s16a.out'"
+check "S359/16 [known-good] ...still quotes its evidence in the delegate's own words" \
+  "grep -qF '$LOOP_LINE' '$TMPROOT/s16a.out'"
+check "S359/16 [known-good] ...and the pre-existing REWORDING limit is still stated" \
+  "grep -qi 'REWORDING each beat is NOT caught' '$TMPROOT/s16a.out'"
+
+# ==========================================================================
 printf '\n== S359/12. ZERO WORKER SPEND ==\n'
 # ==========================================================================
 check "S359/12 no AI CLI was invoked by this suite (PATH shim log empty)" \
