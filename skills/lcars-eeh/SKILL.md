@@ -255,6 +255,24 @@ change, a standing-rule conflict, or an LCARS bug with no workaround.
 lcars-eeh docs ech              # prints HOLOGRAM-COMMAND-MODE.md — the full playbook
 ```
 
+**Or read only the moment you are at.** The playbook is 1,512 lines, most of them
+the REASON behind a rule — which is why none of them is ever cut. It is instead
+readable in parts, split by READER AND MOMENT, and the parts in this order ARE
+the whole file, byte for byte:
+
+```bash
+lcars-eeh docs ech-preflight    # before you start: the grants, the command shape, the state
+lcars-eeh docs ech-intake       # the alignment round, the captain-only steps, filing a milestone
+lcars-eeh docs ech-drive        # driving it backgrounded, with a waiter
+lcars-eeh docs ech-verify       # the Verify gate and the merge policy
+lcars-eeh docs ech-land         # approving, and the hygiene that follows
+lcars-eeh docs ech-wait         # waiting, two missions at a time, the heartbeat
+lcars-eeh docs ech-report       # the interrupt budget and the wrap-up
+```
+
+Read the part for the moment you are at, not the file. `lcars-ech next` names the
+heading, and `lcars-eeh docs` lists the parts.
+
 The token-free driver that sequences it (and spends nothing) sits beside it:
 
 ```bash

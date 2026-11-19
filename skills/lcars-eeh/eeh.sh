@@ -67,11 +67,65 @@ REPO="${LCARS_REPO:-$DEFAULT_REPO}"
 #   lcars-eeh docs                 list the documents
 #   lcars-eeh docs orchestration   print ORCHESTRATION.md
 #   lcars-eeh docs --path ech        print its absolute path only
+#   lcars-eeh docs ech-verify      print ONE PART of the playbook
+#
+# --- THE PLAYBOOK IS ALSO READABLE IN PARTS, BY READER AND MOMENT --------
+# HOLOGRAM-COMMAND-MODE.md is 1,512 lines, and a supervisor used to read all of
+# them to learn the one thing it needed at the moment it needed it. The parts
+# below cut it by READER AND MOMENT — what you need at preflight, at intake,
+# while driving, at the verify gate, at land, while waiting, and when you report
+# — so a seat standing at the gate can ask for the gate.
+#
+# IT IS A PARTITION, NOT A COPY, AND THE FILE IS NEVER EDITED. The parts are
+# consecutive byte ranges of the ONE file, anchored to headings it already has,
+# so THE PARTS CONCATENATED IN ORDER ARE BYTE-IDENTICAL TO IT — by construction,
+# and asserted in tests/lcars-eeh.test.sh against a pinned sha256. That matters
+# for two reasons:
+#   1. THE REASONS SURVIVE. Most of those 1,512 lines are the REASON behind a
+#      rule, and a rule without its reason gets undone here — with named
+#      sessions as the evidence. A split that moves no bytes cannot lose one.
+#   2. EVERY EXISTING READER STILL READS. Around twenty tracked readers grep the
+#      playbook by its path, and two tracked guards (tests/delegation.test.sh
+#      D10 and S354/10) exist precisely to fail if a line is removed from it or
+#      the file is touched at all. Seven new files would have tripped both; a
+#      resolver partition trips neither, and `docs ech` still prints the whole.
+# Anchors are matched as WHOLE LINES and each appears exactly once, so renaming
+# a part's heading breaks the part loudly rather than silently re-cutting it.
 if [ "${1:-}" = "docs" ]; then
   shift
   want_path=0
   case "${1:-}" in --path|-p) want_path=1; shift ;; esac
   name="${1:-}"
+  # <part-name>\t<the WHOLE LINE in the playbook that opens it>, in document
+  # order. Exhaustive: part N runs to the line before part N+1's anchor, and the
+  # last part runs to EOF, which is what makes the concatenation the whole file.
+  hcm_manifest() {
+    cat <<'HCM_PARTS'
+ech-preflight	# HOLOGRAM-COMMAND-MODE.md — how to run LCARS *for* the captain
+ech-intake	## 1. The alignment round — one batch of questions, then walk away
+ech-drive	## 5. Drive it — backgrounded, with a waiter that watches the process
+ech-verify	## 6. The Verify gate — Number One, then the live check
+ech-land	## 7. Land it — approve, then the hygiene that always follows
+ech-wait	## 8. Waiting, two missions at a time, and the crontab heartbeat
+ech-report	## 9. The interrupt budget — what actually reaches the captain
+HCM_PARTS
+  }
+  hcm_part_names() { hcm_manifest | cut -f1 | tr '\n' ' ' | sed 's/ $//'; }
+  hcm_is_part()    { hcm_manifest | cut -f1 | grep -qxF "$1"; }
+  hcm_print_part() { # <part-name> -> that part's bytes, on stdout
+    local start end
+    start="$(hcm_manifest | awk -F'\t' -v n="$1" '$1 == n { print $2; exit }')"
+    end="$(hcm_manifest | awk -F'\t' -v n="$1" 'f { print $2; exit } $1 == n { f = 1 }')"
+    [ -n "$start" ] || return 1
+    # Whole-line equality, not a regex: an anchor carries `.`, `*` and `—`, and
+    # a regex over those would match lines it was never meant to.
+    awk -v s="$start" -v e="$end" '
+      on == 0 { if ($0 == s) { on = 1; print } ; next }
+      e != "" && $0 == e { exit }
+      { print }
+    ' "$SCRIPT_DIR/HOLOGRAM-COMMAND-MODE.md"
+  }
+
   resolve_doc() { # <name> -> filename beside this script, or empty
     case "$1" in
       orchestration|ORCHESTRATION|ORCHESTRATION.md) printf 'ORCHESTRATION.md\n' ;;
@@ -86,8 +140,22 @@ if [ "${1:-}" = "docs" ]; then
   if [ -z "$name" ]; then
     echo "lcars-eeh docs <name> — print one of this skill's documents."
     echo "  names: orchestration | delegation | ech | skill | bug-prd | delegate-brief"
+    # The playbook is 1,512 lines; these are its parts by READER AND MOMENT, so
+    # a reader can load the moment it is at instead of the whole file. `ech`
+    # still prints all of it, and the parts in this order ARE all of it.
+    echo "  parts: $(hcm_part_names)"
     echo "  --path prints the resolved absolute path instead of the contents."
     echo "  resolved from: $SCRIPT_DIR"
+    exit 0
+  fi
+  if hcm_is_part "$name"; then
+    # --path on a PART answers with the playbook's own path, truthfully: that is
+    # the file the part's bytes live in. A pointer printed here always opens.
+    if [ "$want_path" -eq 1 ]; then
+      printf '%s\n' "$SCRIPT_DIR/HOLOGRAM-COMMAND-MODE.md"
+    else
+      hcm_print_part "$name"
+    fi
     exit 0
   fi
   file="$(resolve_doc "$name")"
@@ -95,6 +163,7 @@ if [ "${1:-}" = "docs" ]; then
     {
       echo "lcars eeh: no such document '$name'."
       echo "  names: orchestration | delegation | ech | skill | bug-prd | delegate-brief"
+      echo "  parts: $(hcm_part_names)"
     } >&2
     exit 1
   fi
