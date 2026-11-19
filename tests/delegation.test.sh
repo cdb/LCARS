@@ -4569,12 +4569,12 @@ if s354_case 11; then
        on {print}' "$DIR/delegation.test.sh" >"$guard354"
   out="$(python3 "$guard354" "$SCRIPT" 2>&1)"; rc=$?
   printf '%s\n' "$out"
-  check "S354/11 column guard is PROBLEMS=0 at 17 columns and FOUR readers" \
-    "[ $rc -eq 0 ] && [ \"\$out\" = 'COLS=17 READERS=4 PROBLEMS=0' ]"
+  check "S354/11 column guard is PROBLEMS=0 at 20 columns and FOUR readers (S359 widened it)" \
+    "[ $rc -eq 0 ] && [ \"\$out\" = 'COLS=20 READERS=4 PROBLEMS=0' ]"
   sed "s/^\(DELEGATE_ROW_COLS='[^']*\)'/\1 forgotten'/" "$SCRIPT" >"$TMPROOT/extra-column354.sh"
   out="$(python3 "$guard354" "$TMPROOT/extra-column354.sh" 2>&1)"; rc=$?
   check "S354/11 adding a column WITHOUT widening readers still FAILS the guard" \
-    "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -q 'COLS=18 READERS=4 PROBLEMS=4'"
+    "[ $rc -ne 0 ] && printf '%s' \"\$out\" | grep -q 'COLS=21 READERS=4 PROBLEMS=4'"
 fi
 
 if s354_case 12; then

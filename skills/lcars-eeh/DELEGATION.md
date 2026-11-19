@@ -262,6 +262,39 @@ The signal has its own tally and survives alongside a silence or BLOCKED signal.
 attention without changing the plan, and the unchanged heartbeat gets it through
 `stalled`.
 
+**GOING IN CIRCLES is the fourth lane, and the one a step number cannot see.**
+Silence says nothing came back; `BLOCKED` says the delegate asked for something;
+BEATING BUT NOT MOVING says the step is not climbing. None of the three sees the
+delegate that is busy, talking, and doing **the same work over and over**. So a
+beat reporting work the delegate has **already reported in the same words** three
+times in one run is named GOING IN CIRCLES, with its own tally, the work that
+repeated quoted back, how many times, the threshold applied and the next action.
+`LCARS_ECH_CIRCLE_BEATS` overrides the threshold (whole numbers from 2 to 1000,
+default 3); one report of a piece of work cannot show a repetition. The run
+restarts on an **advancing** `--step K/N`, so a delegate that repeats a line
+while its step climbs is working, not circling. A `done` delegate is never
+reported. The actions are the same three real verbs — re-brief it with a
+*different* approach, replace it, or raise the call it is circling on with the
+captain — and **a kill is not among them**: there is still no pid for a delegate.
+
+**Why it is keyed on THE WORK and never on the step not incrementing.** The
+signature was read out of the S353 capstone's own records rather than guessed.
+The true positive is there: ticket `t-001` burned all three of its TDD sessions,
+and two of them ran the *identical* gate command and failed on the *same* single
+out-of-scope file. So is the trap — delegate `d2` beat **five times at the same
+step 2/7**, and every beat carried different work ("research done (10 agents),
+validate running" → "validate/plan(5 tickets)/plan-review/schedule(4 waves)
+done, implement running" → "implement wave 1/4, ticket t-001 in progress" → …).
+A detector keyed on the step number would have accused a delegate that was
+visibly advancing, and a lane that cries wolf is one the ECH learns to skip.
+
+**AND WHAT THIS LANE CANNOT CATCH, SAID IN ITS OWN FOOTER.** It compares the
+delegate's own words. A delegate that loops while **rewording** each beat is not
+caught by it — nothing this product records would show that, since the ECH holds
+no clock, path or working tree of a delegate's beyond the beats it sends. The
+report says so where it reports, BEATING BUT NOT MOVING is the half that still
+catches that shape, and reading the artifacts is the half neither lane can do.
+
 **A BROKEN LIMIT DEGRADES; IT DOES NOT REFUSE.** A `LCARS_ECH_BEAT_LIMIT` that
 is not a whole number of seconds — `30m` is the one a model types after reading
 the line above — is **not applied**, the documented `1800` is used instead, and
@@ -273,7 +306,10 @@ down with it. A limit with nothing to measure must never silence machinery that
 does not read it, and `stalled` always exits 0.
 The motion threshold follows the same discipline: a malformed or out-of-range
 value falls back to 3, warns on stderr and in every motion report that applies
-it, and never silences an unrelated report.
+it, and never silences an unrelated report. So does the repetition threshold
+(`LCARS_ECH_CIRCLE_BEATS`), with a known-good control holding it: after a
+rejected value the circles lane still fires on a real loop, against the stated
+default.
 
 **AND A CLOCK THAT CANNOT BE READ IS REPORTED, NOT SKIPPED.** A delegate whose
 recorded timestamp will not parse, or sits in the future, is **UNTIMEABLE** —

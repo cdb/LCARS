@@ -223,7 +223,9 @@ usage() {
                        `stalled` names it SILENT, with its unit, its tier and what to
                        do about it. Optional --step K/N also proves MOTION: repeated
                        steps trigger a not-moving report after 3 beats (override:
-                       LCARS_ECH_STEP_STALL_BEATS). It is not a verdict and advances nothing
+                       LCARS_ECH_STEP_STALL_BEATS). And the SAME WORK reported 3 times
+                       in one run is named GOING IN CIRCLES (override:
+                       LCARS_ECH_CIRCLE_BEATS). It is not a verdict and advances nothing
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
   ask "<what>" --mission <m> [--why <w>] [--command <c>] [--rollback <r>]
                        raise a question YOURSELF (a product call, a scope change, a
@@ -1050,6 +1052,36 @@ if [ -n "$STEP_STALL_BEATS_BAD" ]; then
   STEP_STALL_BEATS="$STEP_STALL_BEATS_DEFAULT"
   printf "lcars ech: WARNING — LCARS_ECH_STEP_STALL_BEATS '%s' was REJECTED: use a whole number from 2 to %s. The documented %s-beat DEFAULT is in force instead; unrelated reports are untouched. Unset it for the default or set it to a legal beat count.\n" \
     "$(printf '%s' "$STEP_STALL_BEATS_RAW" | report_text_safe)" "$STEP_STALL_BEATS_CEILING" "$STEP_STALL_BEATS_DEFAULT" >&2
+fi
+
+# HOW MANY TIMES THE SAME WORK MAY BE REPORTED BEFORE IT IS A CIRCLE (S359).
+# Same shape, same ceiling and the same degrade-and-say-so discipline as
+# `STEP_STALL_BEATS` above, and for the same measured reason: a limit that
+# REFUSES takes down reports that never read it (S351's failed-mission line in a
+# repo with no delegates at all). One report of a piece of work cannot show a
+# repetition, so 2 is the floor exactly as it is for motion.
+CIRCLE_BEATS_DEFAULT=3
+CIRCLE_BEATS_CEILING=1000
+CIRCLE_BEATS="${LCARS_ECH_CIRCLE_BEATS:-3}"
+CIRCLE_BEATS_RAW="${LCARS_ECH_CIRCLE_BEATS-}"
+CIRCLE_BEATS_BAD=""
+if [ -n "${LCARS_ECH_CIRCLE_BEATS+set}" ]; then
+  case "$CIRCLE_BEATS_RAW" in
+    ''|*[!0-9]*) CIRCLE_BEATS_BAD=1 ;;
+    *)
+      if [ "${#CIRCLE_BEATS_RAW}" -gt 4 ] \
+        || [ "$CIRCLE_BEATS_RAW" -lt 2 ] \
+        || [ "$CIRCLE_BEATS_RAW" -gt "$CIRCLE_BEATS_CEILING" ]; then
+        CIRCLE_BEATS_BAD=1
+      else
+        CIRCLE_BEATS="$((10#$CIRCLE_BEATS_RAW))"
+      fi ;;
+  esac
+fi
+if [ -n "$CIRCLE_BEATS_BAD" ]; then
+  CIRCLE_BEATS="$CIRCLE_BEATS_DEFAULT"
+  printf "lcars ech: WARNING — LCARS_ECH_CIRCLE_BEATS '%s' was REJECTED: use a whole number from 2 to %s (one report of a piece of work cannot show a repetition). The documented %s-beat DEFAULT is in force instead; unrelated reports are untouched. Unset it for the default or set it to a legal beat count.\n" \
+    "$(printf '%s' "$CIRCLE_BEATS_RAW" | report_text_safe)" "$CIRCLE_BEATS_CEILING" "$CIRCLE_BEATS_DEFAULT" >&2
 fi
 
 # THE SENTINEL for question 2's default. It is a PHRASE, never a command, and it
@@ -3458,6 +3490,7 @@ cmd_watch() {
   # come back empty, and `delegate_row_extra` says so if it does not.
   local wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wline
   local wlimit wlimitsrc wblocked wstep wstepbeats wstepelapsed wnotmoving wextra
+  local wcircbeats wcircling wcircline
   local interval="${LCARS_ECH_WATCH_INTERVAL:-5}"
   case "$interval" in ''|*[!0-9.]*|.*|*.*.*) die "watch: invalid poll interval" ;; esac
   trap '[ -z "$sleeper" ] || { kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; }; exit 0' TERM INT HUP
@@ -3482,7 +3515,7 @@ cmd_watch() {
     # A SILENT DELEGATE IS A WAKE, exactly as a failed-and-idle mission is
     # (S351) — same witness loop, same `event` string, same `watch.log`.
     silents=""
-    while IFS="$wtab" read -r wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wlimit wlimitsrc wblocked wstep wstepbeats wstepelapsed wnotmoving wline wextra; do
+    while IFS="$wtab" read -r wdid wunit wtier wstat wmis welapsed wbasis wsilent wsince wlimit wlimitsrc wblocked wstep wstepbeats wstepelapsed wnotmoving wcircbeats wcircling wcircline wline wextra; do
       [ -n "${wdid:-}" ] || continue
       delegate_row_extra cmd_watch "${wextra:-}"
       [ "${wsilent:-0}" = "1" ] || continue
@@ -3855,7 +3888,8 @@ SF_EOF
   # byte-identical to the shipped one.
   local dn=0 du=0 db=0 dm=0 did dunit dtier dstat dmis delapsed dbasis dsilent dsince dline
   local dlimit dlimitsrc duwhy dblocked dstep dstepbeats dstepelapsed dnotmoving dstepage dextra
-  while IFS="$tab" read -r did dunit dtier dstat dmis delapsed dbasis dsilent dsince dlimit dlimitsrc dblocked dstep dstepbeats dstepelapsed dnotmoving dline dextra; do
+  local dc=0 dcircbeats dcircling dcircline dcircstep
+  while IFS="$tab" read -r did dunit dtier dstat dmis delapsed dbasis dsilent dsince dlimit dlimitsrc dblocked dstep dstepbeats dstepelapsed dnotmoving dcircbeats dcircling dcircline dline dextra; do
     [ -n "${did:-}" ] || continue
     # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
     delegate_row_extra cmd_stalled "${dextra:-}"
@@ -3871,6 +3905,36 @@ SF_EOF
       printf '  → this motion signal is NOT silence: the delegate spoke. It is NOT a verdict. Its last words: "%s"\n' "$dline"
       printf '  → what to do: RE-BRIEF it with a smaller next step and ask what is holding it there; REPLACE it (`%s delegate close %s`, then `%s delegate %s`); or RAISE a call only the captain owns (`%s ask "<what you need from him>" --mission %s`). Another beat at the same step does NOT clear this line; an advancing --step K/N does.\n' \
         "$SELF_CMD" "$did" "$SELF_CMD" "$dunit" "$SELF_CMD" "$dmis"
+    fi
+    # --- GOING IN CIRCLES (S359) — THE FOURTH LANE, AND THE ONE A STEP NUMBER
+    # CANNOT SEE. Silence says nothing came back. BLOCKED says the delegate
+    # asked for something. BEATING BUT NOT MOVING says the step is not climbing.
+    # None of the three can see the delegate that is busy, talking, and doing
+    # THE SAME WORK OVER AND OVER. That is what burned ticket t-001 for all
+    # three of its TDD sessions in the S353 capstone: two of them ran the
+    # IDENTICAL gate command and failed on the SAME single out-of-scope file.
+    #
+    # IT IS REPORTED WHETHER OR NOT THE DELEGATE IS QUIET, like the blocked
+    # lane and for the same reason: a delegate in a loop is beating, so a lane
+    # that waits out the silence limit first has half an hour of latency built
+    # into it. It does NOT `continue`: a circling delegate can also be past the
+    # limit, and nothing measured is lost to the choice of lane.
+    if [ "${dcircling:-0}" = "1" ]; then
+      dc=$((dc + 1))
+      if [ "$dstep" = "-" ]; then
+        dcircstep="with no step reported"
+      else
+        dcircstep="at step $dstep"
+      fi
+      printf 'GOING IN CIRCLES: %s (unit %s, tier %s) — THE SAME WORK, DONE AGAIN: it has reported the same work %s times %s, and nothing in its own account of it has changed. Threshold applied: %s.\n' \
+        "$did" "$dunit" "$dtier" "$dcircbeats" "$dcircstep" "$(circle_beats_said)"
+      printf '  → THE EVIDENCE — the work that repeated, %s times, in its own words: "%s"\n' \
+        "$dcircbeats" "$dcircline"
+      printf '  → this is NOT silence (it beat), NOT a block (it asked you for nothing) and NOT the not-moving signal (that one counts beats AT A STEP; this one counts THE WORK). It is a repetition signal, not a verdict.\n'
+      printf '  → what to do, and one of these three is the answer: RE-BRIEF it with a DIFFERENT approach — repeating the attempt is the one thing already proven not to work — and ask what it is stuck behind; REPLACE it (`%s delegate close %s`, then `%s delegate %s`); or RAISE the call it is circling on with the captain (`%s ask "<what you need from him>" --mission %s`). A KILL IS NOT ON THAT LIST: the ECH has no pid for a delegate, and nothing in this report kills anything.\n' \
+        "$SELF_CMD" "$did" "$SELF_CMD" "$dunit" "$SELF_CMD" "$dmis"
+      printf '  → what clears this line: a beat describing DIFFERENT work — `%s beat %s "<one line of what actually changed>"` — or an advancing `--step K/N`, which starts a fresh run. Another beat saying the same thing does not.\n' \
+        "$SELF_CMD" "$did"
     fi
     # --- THE BLOCKED LANE (S352 fix round 1, D5), BEFORE THE SILENCE GATE. A
     # delegate has exactly one channel to the ECH — its beat — so a beat whose
@@ -3986,6 +4050,14 @@ DELEGATE_SILENCE_EOF
   fi
   if [ "$dm" -gt 0 ]; then
     printf '%s delegate(s) are beating but not moving — each line above names the next action; this is a motion signal, not a verdict.\n' "$dm"
+  fi
+  # ITS OWN TALLY, AND ITS OWN LIMIT SAID OUT LOUD (S359). A circle is not a
+  # silence, not a block and not a lack of motion, so it is counted on its own —
+  # and the footer states what this lane CANNOT catch, because a quiet lane that
+  # the reader believes is exhaustive is itself a false green.
+  if [ "$dc" -gt 0 ]; then
+    printf '%s delegate(s) are GOING IN CIRCLES — each line above quotes the work that repeated and names the next action; this is a repetition signal, not a verdict.\n' "$dc"
+    printf '  AND ITS LIMIT, PLAINLY: this lane keys on the delegate reporting THE SAME WORK in the same words. A delegate that loops while REWORDING each beat is NOT caught here — nothing this product records would show it — so BEATING BUT NOT MOVING is the other half of this defence, and your own read of its artifacts is the half neither lane can do.\n'
   fi
   return 0
 }
@@ -8053,7 +8125,25 @@ BEAT_SKEW_GRACE=300
 #     of this source and goes RED if their arities disagree.
 # ADD A COLUMN HERE AND IN THE `row` LITERAL BELOW, and the test will name every
 # reader you have to widen. Nobody has to remember anything.
-DELEGATE_ROW_COLS='id unit tier status mission elapsed basis silent since limit limitsrc blocked step stepBeats stepElapsed notMoving lastLine'
+#
+# AND THE REPETITION SIGNATURE IS A COLUMN TOO (S359). Three more:
+#   circleBeats     how many times the SAME work has been reported in the
+#                   current run (the run restarts on an advancing step)
+#   goingInCircles  1 when the status is not `done` and circleBeats has reached
+#                   $CIRCLE_BEATS
+#   circleLine      THE EVIDENCE: that repeated work in the delegate's own
+#                   words, escaped by the same rule as `lastLine`
+# IT IS KEYED ON THE WORK, NEVER ON THE STEP NOT INCREMENTING, and that is read
+# straight out of the S353 capstone's record (lcars-dev/tests/drives/s353/
+# evidence/d2-frozen/d2-record.json): delegate d2 beat FIVE times at the SAME
+# step 2/7 and every beat carried DIFFERENT work — "research done (10 agents),
+# validate running", then "…plan(5 tickets)/plan-review/schedule(4 waves) done,
+# implement running", then "implement wave 1/4, ticket t-001 in progress". A
+# detector keyed on the step number would have ACCUSED a delegate that was
+# visibly advancing, and a lane that cries wolf is one the ECH learns to skip.
+# The same run supplies the true positive: ticket t-001's first two TDD sessions
+# each ran the IDENTICAL gate command and failed on the SAME out-of-scope file.
+DELEGATE_ROW_COLS='id unit tier status mission elapsed basis silent since limit limitsrc blocked step stepBeats stepElapsed notMoving circleBeats goingInCircles circleLine lastLine'
 
 # delegate_row_extra <reader> <remainder> — THE LOUD HALF of that contract. The
 # remainder must come back EMPTY; a non-empty one means the producer has grown a
@@ -8068,13 +8158,14 @@ delegate_row_extra() {
 }
 delegate_beat_rows() {
   [ -f "$APJSON" ] || return 0
-  "$PY" - "$APJSON" "$(now)" "$BEAT_LIMIT" "$BEAT_SKEW_GRACE" "$DELEGATE_ROW_COLS" "$STEP_STALL_BEATS" "$REPORT_TEXT_SAFE_PY" <<'PY'
+  "$PY" - "$APJSON" "$(now)" "$BEAT_LIMIT" "$BEAT_SKEW_GRACE" "$DELEGATE_ROW_COLS" "$STEP_STALL_BEATS" "$REPORT_TEXT_SAFE_PY" "$CIRCLE_BEATS" <<'PY'
 import json, sys
 exec(sys.argv[7])
 f, now, limit = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 grace = int(sys.argv[4])
 cols = sys.argv[5].split()
 step_limit = int(sys.argv[6])
+circle_limit = int(sys.argv[8])
 checked = False
 try:
     d = json.load(open(f))
@@ -8089,6 +8180,17 @@ def step_value(x):
         return None
     k, n = num(x.get("k")), num(x.get("n"))
     return (k, n) if k is not None and n is not None and 1 <= k <= n <= 1000000 else None
+# THE REPETITION KEY (S359) — "is this the same work?" and nothing more.
+# It folds case, collapses runs of whitespace and drops surrounding punctuation,
+# because `Re-ran  the gate.` and `re-ran the gate` are one piece of work typed
+# twice. It does NOT try to recognise a REWORDED loop: that would be a
+# similarity judgement, and this project has burned whole sessions on classifiers
+# that scored well until a tester reworded the corpus preserving meaning (S156,
+# cured by DELETING the signals). So the lane is honest about the blind spot
+# instead — `cmd_stalled`'s footer and DELEGATION.md both state it — and the
+# BEATING BUT NOT MOVING signal is the half that still catches that case.
+def circle_key(text):
+    return " ".join((text or "").split()).casefold().strip(" \t.,;:!?-–—…\"'`()[]")
 for k in sorted((d.get("delegates") or {})):
     v = (d.get("delegates") or {})[k]
     if not isinstance(v, dict):
@@ -8163,6 +8265,34 @@ for k in sorted((d.get("delegates") or {})):
     if step_since is not None and step_since - now <= grace:
         step_elapsed = max(0, now - step_since)
     not_moving = int(status != "done" and step_beats >= step_limit)
+    # S359 — THE SAME WORK, DONE AGAIN. A SECOND pass over the beats, on
+    # purpose: the motion loop above owns the step and is deliberately left
+    # byte-for-byte alone, and these two facts are different questions asked of
+    # the same ledger. The window of "the current run of work" restarts on an
+    # ADVANCING step (a higher K) — a delegate that repeats a line while its
+    # step climbs is working, not circling — and on a step record that cannot be
+    # read, which is where the motion loop restarts too. A beat with no step at
+    # all neither advances nor restarts: it is counted as work, like any other.
+    circ, c_high, c_count, c_line = {}, None, 0, ""
+    for b in beats:
+        if not isinstance(b, dict):
+            continue
+        if "step" in b:
+            reported = step_value(b["step"])
+            if reported is None or c_high is None or reported[0] > c_high:
+                circ = {}
+                c_high = reported[0] if reported is not None else None
+        key = circle_key(b.get("line"))
+        if not key:
+            continue
+        entry = circ.get(key)
+        if entry is None:
+            circ[key] = entry = [0, ""]
+        entry[0] += 1
+        entry[1] = b.get("line") or ""
+        if entry[0] > c_count:
+            c_count, c_line = entry[0], entry[1]
+    going_in_circles = int(status != "done" and c_count >= circle_limit)
     # THE ROW CARRIES ITS OWN COLUMN NAMES (S352 fix round 2, Item 2). ONE
     # literal holds both the name and the value of every column, so those two
     # cannot drift from each other, and the names are checked once against the
@@ -8185,6 +8315,9 @@ for k in sorted((d.get("delegates") or {})):
            ("stepBeats", str(step_beats)),
            ("stepElapsed", str(step_elapsed)),
            ("notMoving", str(not_moving)),
+           ("circleBeats", str(c_count)),
+           ("goingInCircles", str(going_in_circles)),
+           ("circleLine", flat(c_line)),
            ("lastLine", flat(last))]
     if not checked:
         checked = True
@@ -8242,6 +8375,18 @@ step_stall_beats_said() {
   fi
 }
 
+# circle_beats_said → the repetition threshold in the words a report uses, by
+# the same rule as the two limits above: the figure ACTUALLY APPLIED, named with
+# the variable that changes it, and a rejected override said in band as well as
+# on stderr (a `2>/dev/null` wrapper can drop the warning and keep the report).
+circle_beats_said() {
+  printf '%s beats (LCARS_ECH_CIRCLE_BEATS)' "$CIRCLE_BEATS"
+  if [ -n "$CIRCLE_BEATS_BAD" ]; then
+    printf " — the DEFAULT, because LCARS_ECH_CIRCLE_BEATS '%s' was REJECTED: use a whole number from 2 to %s" \
+      "$(printf '%s' "$CIRCLE_BEATS_RAW" | report_text_safe)" "$CIRCLE_BEATS_CEILING"
+  fi
+}
+
 # ==========================================================================
 # delegate_attention_say — THE LOOP'S OWN VERB NOTICES A QUIET DELEGATE (S353)
 # ==========================================================================
@@ -8276,13 +8421,23 @@ delegate_attention_say() {
   local n=0
   local adid aunit atier astat amis aelapsed abasis asilent asince
   local alimit alimitsrc ablocked astep astepbeats astepelapsed anotmoving aline aextra
-  while IFS="$tab" read -r adid aunit atier astat amis aelapsed abasis asilent asince alimit alimitsrc ablocked astep astepbeats astepelapsed anotmoving aline aextra; do
+  local acircbeats acircling acircline
+  while IFS="$tab" read -r adid aunit atier astat amis aelapsed abasis asilent asince alimit alimitsrc ablocked astep astepbeats astepelapsed anotmoving acircbeats acircling acircline aline aextra; do
     [ -n "${adid:-}" ] || continue
     # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
     delegate_row_extra delegate_attention_say "${aextra:-}"
     if [ "${anotmoving:-0}" = "1" ]; then
       n=$((n + 1))
       say "DELEGATE NOT-MOVING: $adid (unit $aunit, tier $atier) is beating but not moving at step $astep: $astepbeats beats without an advance, against a threshold of $(step_stall_beats_said). This is NOT silence and NOT a verdict. Its last words: \"$aline\""
+    fi
+    # AND THE CIRCLE, ON THE VERB THE HOLOGRAM ACTUALLY DRIVES ON (S359). The
+    # same argument that put the other lanes here: a lane reachable only from
+    # the hourly heartbeat has an hour of latency, and a delegate repeating
+    # itself is burning the captain's allowance the whole time. One line; the
+    # three actions stay with `stalled`, which OWNS them.
+    if [ "${acircling:-0}" = "1" ]; then
+      n=$((n + 1))
+      say "DELEGATE GOING IN CIRCLES: $adid (unit $aunit, tier $atier) has reported THE SAME WORK $acircbeats times with nothing changing, against a threshold of $(circle_beats_said). The work that repeated: \"$acircline\". This is a repetition signal, not a verdict."
     fi
     if [ "${ablocked:-0}" = "1" ]; then
       # A BLOCK IS THE OPPOSITE FACT TO A SILENCE — the delegate SPOKE, and said
@@ -8498,8 +8653,9 @@ PY
   # second place to look.
   local dl="" stab sid sunit stier sstat smis selapsed sbasis ssilent ssince sline beatsaid
   local slimit slimitsrc sblocked sstep sstepbeats sstepelapsed snotmoving sextra
+  local scircbeats scircling scircline
   stab="$(printf '\t')"
-  while IFS="$stab" read -r sid sunit stier sstat smis selapsed sbasis ssilent ssince slimit slimitsrc sblocked sstep sstepbeats sstepelapsed snotmoving sline sextra; do
+  while IFS="$stab" read -r sid sunit stier sstat smis selapsed sbasis ssilent ssince slimit slimitsrc sblocked sstep sstepbeats sstepelapsed snotmoving scircbeats scircling scircline sline sextra; do
     [ -n "${sid:-}" ] || continue
     # THE REMAINDER GUARD (S352 fix round 2, Item 2) — see DELEGATE_ROW_COLS.
     delegate_row_extra delegation_status_lines "${sextra:-}"
