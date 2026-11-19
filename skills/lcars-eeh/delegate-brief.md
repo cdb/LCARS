@@ -138,13 +138,16 @@ thing it can see.
 
 **One beat per step, as you finish it** — through the launcher named in
 *Where you work* above, by its absolute path. **Declare N**, your total number
-of checkable steps, before starting; report the current K of that N. This
-runnable example declares seven steps and reports the first: set N to your
-own count and K to the step you just finished on subsequent calls.
+of checkable steps, before starting; report the current K of that N. And say
+**what changed**: the two numbers are the bookkeeping, the words after the colon
+are the beat. This runnable example declares seven steps and reports the first —
+set N to your own count, K to the step you are on, and WHAT to what actually
+moved since your last beat.
 
     N=7
     K=1
-    {{LAUNCHER}} beat {{DELEGATE_ID}} "completed step $K of $N" --step "$K/$N"
+    WHAT="oriented: seat and budget checked, the mission is at stage align"
+    {{LAUNCHER}} beat {{DELEGATE_ID}} "step $K of $N running: $WHAT" --step "$K/$N"
 
 Why: a beat without a step proves you are alive, not that you are getting anywhere.
 
@@ -154,6 +157,8 @@ reads your latest one as *where you got to*. Repeat the current step if it is
 still running; do not invent an advance to quiet the watchdog.
 
 {{BEAT_LIMIT}}
+
+{{CIRCLE_LIMIT}}
 
 ## 3. The LCARS verbs in scope
 

@@ -542,6 +542,164 @@ check "S359/11 HOLOGRAM-COMMAND-MODE.md is UNTOUCHED by this session" \
   "git -C '$REPO_ROOT' diff --exit-code HEAD -- skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
 
 # ==========================================================================
+printf '\n== S359/13. A LOOP THAT RECOVERS IS NO LONGER ACCUSED ==\n'
+# ==========================================================================
+# S359 FIX ROUND 1, DEFECT 2. The committed report STATED two clearing
+# conditions in its own words — "a beat describing DIFFERENT work ... or an
+# advancing `--step K/N`" — and the suite asserted only that it PRINTED that
+# sentence. Neither condition worked: the running maximum `c_count` only ever
+# increased, so an accusation latched for the delegate's whole life. Prose
+# tested, mechanism untested. These assertions test the MECHANISM.
+# THE KNOWN-FAIL CONTROL FOR THIS WHOLE FIX ROUND is the lane AS FIRST
+# COMMITTED, and it is NOT `$S359_PARENT`. Measured: pointing these controls at
+# the parent made them fail, because that commit predates the lane entirely and
+# reports no circle for ANY fixture — it would have "passed" a control it never
+# ran, which is the exact shape of a green that proves nothing. The sha is
+# pinned the way $S359_PARENT is, because HEAD moves the moment this fix is
+# committed and a control that tracks HEAD silently becomes a control OF THE
+# CURE instead of of the defect.
+S359_FIRST_CUT='f172cf1'
+BUG13="$TMPROOT/first-cut"
+BUG13SH="$BUG13/skills/lcars-eeh/ech.sh"
+mkdir -p "$BUG13" && cp -R "$REPO_ROOT/skills" "$BUG13/skills" \
+  && git -C "$REPO_ROOT" show "$S359_FIRST_CUT:skills/lcars-eeh/ech.sh" >"$BUG13SH" 2>/dev/null
+check "S359/13 [control] the baseline really IS the lane as first committed, defect and all" \
+  "[ -s '$BUG13SH' ] && grep -qF 'circ, c_high, c_count, c_line = {}, None, 0, \"\"' '$BUG13SH'"
+
+r13="$(circ_loop_repo)"
+ech "$r13" stalled >"$TMPROOT/s13a.out" 2>/dev/null
+check "S359/13 [control] the planted loop IS accused before anything recovers" \
+  "grep -q '^GOING IN CIRCLES: d1' '$TMPROOT/s13a.out'"
+# CLEARING CONDITION 1, verbatim from the report: a beat describing DIFFERENT work.
+ech "$r13" beat d1 'found it — the out-of-scope file was a stale symlink; removed it' --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r13" stalled >"$TMPROOT/s13b.out" 2>/dev/null
+check "S359/13 a beat describing DIFFERENT work CLEARS the line, as the report promises" \
+  "! grep -q 'GOING IN CIRCLES' '$TMPROOT/s13b.out'"
+# CLEARING CONDITION 2: an advancing --step starts a fresh run. Isolated from
+# condition 1 on purpose — the LINE here is the unchanged loop line, so only the
+# step advance can clear it.
+r13b="$(circ_loop_repo)"
+ech "$r13b" beat d1 "$LOOP_LINE" --step 5/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r13b" stalled >"$TMPROOT/s13c.out" 2>/dev/null
+check "S359/13 an ADVANCING step starts a fresh run even when the line is unchanged" \
+  "! grep -q 'GOING IN CIRCLES' '$TMPROOT/s13c.out'"
+# AND THE FULL RECOVERY: a real loop, then the delegate works its way out
+# through DISTINCT work at climbing steps. The latched report named step 7/7 and
+# quoted a line that was never reported at step 7/7.
+r13c="$(circ_loop_repo)"
+ech "$r13c" beat d1 'dropped the stale file from the scope list'      --step 5/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r13c" beat d1 'scope gate GREEN; running the flip-flop gate'    --step 6/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r13c" beat d1 'flip-flop green on tip, red on parent; writing the hand-back' --step 7/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r13c" stalled >"$TMPROOT/s13d.out" 2>/dev/null
+check "S359/13 a delegate that WORKED ITS WAY OUT is not still accused at step 7/7" \
+  "! grep -q 'GOING IN CIRCLES' '$TMPROOT/s13d.out'"
+check "S359/13 ...and the stale loop line is not quoted at a step it never happened at" \
+  "! grep -qF '$LOOP_LINE' '$TMPROOT/s13d.out'"
+check "S359/13 [known-fail control] the PARENT script still latches the same fixture" \
+  "ech_at '$BUG13SH' '$r13c' stalled 2>/dev/null >'$TMPROOT/s13e.out' ; grep -q '^GOING IN CIRCLES: d1' '$TMPROOT/s13e.out'"
+
+# ==========================================================================
+printf '\n== S359/14. DISTINCT WORK BETWEEN REPEATS IS NOT A CIRCLE ==\n'
+# ==========================================================================
+# S359 FIX ROUND 1, DEFECT 3. The tally was a dict over the WHOLE run, so the
+# repeats never had to be CONSECUTIVE. A delegate interleaving real progress
+# with a recurring status line was accused — while the line printed above it
+# asserted "nothing in its own account of it has changed", which was false.
+r14="$(circ_repo)"
+ech "$r14" beat d1 'waiting on the suite'                  --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r14" beat d1 't-001 green, 3 files changed'          --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r14" beat d1 'waiting on the suite'                  --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r14" beat d1 't-002 tests written, red as expected'  --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r14" beat d1 'waiting on the suite'                  --step 4/7 >>"$TMPROOT/beat.log" 2>&1
+ech "$r14" stalled >"$TMPROOT/s14.out" 2>/dev/null; rc=$?
+check "S359/14 real progress BETWEEN the repeats is not a circle (they must be consecutive)" \
+  "[ $rc -eq 0 ] && ! grep -q 'GOING IN CIRCLES' '$TMPROOT/s14.out'"
+check "S359/14 [control] the delegate is still VISIBLE — the motion lane fires on it" \
+  "grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/s14.out'"
+check "S359/14 [known-fail control] the PARENT script accused this working delegate" \
+  "ech_at '$BUG13SH' '$r14' stalled 2>/dev/null >'$TMPROOT/s14b.out' ; grep -q '^GOING IN CIRCLES: d1' '$TMPROOT/s14b.out'"
+# AND WITH NO `--step` AT ALL — the documented default for every caller minted
+# before S354. With no step there is no run window, so the delegate's whole
+# lifetime was one run and an interleaved status line was accused.
+r14c="$(circ_repo)"
+ech "$r14c" beat d1 'waiting on the suite'            >>"$TMPROOT/beat.log" 2>&1
+ech "$r14c" beat d1 'rewrote the fixture loader'      >>"$TMPROOT/beat.log" 2>&1
+ech "$r14c" beat d1 'waiting on the suite'            >>"$TMPROOT/beat.log" 2>&1
+ech "$r14c" beat d1 'loader green; onto the gate'     >>"$TMPROOT/beat.log" 2>&1
+ech "$r14c" beat d1 'waiting on the suite'            >>"$TMPROOT/beat.log" 2>&1
+ech "$r14c" stalled >"$TMPROOT/s14c.out" 2>/dev/null
+check "S359/14 a delegate reporting NO step is judged on consecutive repeats too" \
+  "! grep -q 'GOING IN CIRCLES' '$TMPROOT/s14c.out'"
+check "S359/14 [control] three CONSECUTIVE identical beats with no step ARE still caught" \
+  "r14d=\"\$(circ_repo)\"; for i in 1 2 3; do ech \"\$r14d\" beat d1 'waiting on the suite' >/dev/null 2>&1; done; ech \"\$r14d\" stalled >'$TMPROOT/s14d.out' 2>/dev/null; grep -q '^GOING IN CIRCLES: d1' '$TMPROOT/s14d.out'"
+
+# ==========================================================================
+printf '\n== S359/15. THE BRIEF CARRIES THE LANE, AND STOPS MANUFACTURING IT ==\n'
+# ==========================================================================
+# S359 FIX ROUND 1, DEFECT 1. The product MANUFACTURED the false positive: the
+# brief's runnable beat example was `"completed step $K of $N"` — a PURE
+# FUNCTION of K and N — directly above the instruction "Repeat the current step
+# if it is still running". Obeying the brief literally produced three identical
+# lines and an accusation. And the rendered brief mentioned this lane ZERO
+# times, while carrying {{BEAT_LIMIT}} twice for the silence lane, breaking
+# DELEGATION.md's own rule that the brief states the limit it is held to.
+TPL15="$REPO_ROOT/skills/lcars-eeh/delegate-brief.md"
+git -C "$REPO_ROOT" show "$S359_PARENT:skills/lcars-eeh/delegate-brief.md" >"$TMPROOT/tpl-parent.md" 2>/dev/null
+check "S359/15 [known-fail control] the PARENT template never mentioned the lane" \
+  "[ -s '$TMPROOT/tpl-parent.md' ] && ! grep -qi 'circle' '$TMPROOT/tpl-parent.md'"
+check "S359/15 the template now carries the lane's own slot, as it does the beat limit" \
+  "grep -q '{{CIRCLE_LIMIT}}' '$TPL15'"
+# THE EXAMPLE MUST NOT BE A PURE FUNCTION OF K AND N. The capstone's real
+# surviving beat shape is "step 2 of 7 running: <what changed>".
+cat >"$TMPROOT/purefn.py" <<'PY'
+import re, sys
+src = open(sys.argv[1]).read()
+sec = src.split('### And while you work: BEAT', 1)[1].split('## 3.', 1)[0]
+cmds = [l for l in sec.splitlines() if l.startswith('    ') and ' beat ' in l]
+assert len(cmds) == 1, cmds
+msg = re.search(r'beat \{\{DELEGATE_ID\}\} "([^"]*)"', cmds[0])
+assert msg, cmds[0]
+vars_ = set(re.findall(r'\$\{?([A-Za-z_][A-Za-z0-9_]*)', msg.group(1)))
+print("MSGVARS=" + ",".join(sorted(vars_)))
+sys.exit(0 if vars_ - {"K", "N"} else 1)
+PY
+check "S359/15 [known-fail control] the PARENT example WAS a pure function of K and N" \
+  "! python3 '$TMPROOT/purefn.py' '$TMPROOT/tpl-parent.md' >'$TMPROOT/purefn-parent.out' 2>&1"
+check "S359/15 the example now carries WHAT CHANGED, not only the two numbers" \
+  "python3 '$TMPROOT/purefn.py' '$TPL15' >'$TMPROOT/purefn-now.out' 2>&1"
+check "S359/15 line 153's instruction is KEPT — repeating a step is correct behaviour" \
+  "grep -q 'do not invent an advance to quiet the watchdog' '$TPL15'"
+# AND THE RENDERED BRIEF SAYS IT, with the limit ACTUALLY APPLIED.
+r15="$(circ_repo)"
+B15="$r15/.git/lcars/delegates/d1/BRIEF.md"
+check "S359/15 [control] the brief really rendered" "[ -s '$B15' ]"
+check "S359/15 the rendered brief NAMES the lane it is held to" \
+  "grep -q 'GOING IN CIRCLES' '$B15'"
+check "S359/15 ...and states the threshold, so the obligation travels with the hand-off" \
+  "grep -q '3 times running' '$B15' && grep -q 'LCARS_ECH_CIRCLE_BEATS' '$B15'"
+check "S359/15 no unfilled template token survives the new slot" \
+  "! grep -q '{{' '$B15'"
+# A BRIEF MINTED UNDER AN OVERRIDE STATES THE FIGURE IT WAS MINTED UNDER —
+# BEAT_LIMIT's contract, applied to this lane.
+r15b="$(new_repo)"; ap_init "$r15b"; new_mission "$r15b" progress implement
+( export LCARS_ECH_CIRCLE_BEATS=5
+  ech "$r15b" tier progress --tier T1 --why "one bounded unit"
+  ech "$r15b" delegate progress ) >>"$TMPROOT/mint.log" 2>&1
+B15B="$r15b/.git/lcars/delegates/d1/BRIEF.md"
+check "S359/15 a brief minted under an override states THAT figure, never the default" \
+  "grep -q '5 times running' '$B15B' && ! grep -q '3 times running' '$B15B'"
+# AND S354/10'S CONTRACT STILL HOLDS: the example RUNS AS IT STANDS. Held here
+# so this suite proves it without running tests/delegation.test.sh (~57 min).
+python3 - "$B15" "$TMPROOT/brief-beat15.sh" <<'PY'
+import sys
+s = open(sys.argv[1]).read().split('### And while you work: BEAT', 1)[1].split('## 3.', 1)[0]
+open(sys.argv[2], 'w').write('\n'.join(l[4:] for l in s.splitlines() if l.startswith('    ')) + '\n')
+PY
+( cd "$r15" && bash "$TMPROOT/brief-beat15.sh" ) >"$TMPROOT/brief-cmd15.log" 2>&1; rc=$?
+check "S359/15 the rendered beat example STILL RUNS AS IT STANDS and records step 1/7" \
+  "[ $rc -eq 0 ] && python3 -c \"import json;d=json.load(open('$r15/.git/lcars/autopilot.json'))['delegates']['d1']['step'];assert (d['k'],d['n'])==(1,7),d\""
+
+# ==========================================================================
 printf '\n== S359/12. ZERO WORKER SPEND ==\n'
 # ==========================================================================
 check "S359/12 no AI CLI was invoked by this suite (PATH shim log empty)" \

@@ -7376,6 +7376,33 @@ is the only thing it can see. If a step is genuinely going to take longer than t
 in\" is a beat, and it is the difference between a delegate that is working and one that
 is gone."
 
+  # THE REPETITION LIMIT, STATED IN THE BRIEF TOO (S359 fix round 1, D1). The
+  # product was MANUFACTURING the accusation it then printed. § 2's runnable
+  # example used to be `"completed step $K of $N"` — a PURE FUNCTION of K and N
+  # — directly above "repeat the current step if it is still running", so a
+  # delegate obeying its brief to the letter emitted three identical lines and
+  # was named GOING IN CIRCLES at the third. The example now carries WHAT
+  # CHANGED, and the obligation travels with the hand-off exactly as the silence
+  # limit does — DELEGATION.md § NO SILENT HOURS: "the brief a delegate is
+  # handed states the limit it is held to". A brief minted under an overridden
+  # LCARS_ECH_CIRCLE_BEATS states the figure IT was minted under, never the
+  # default, for the same reason the beat limit does.
+  local climit
+  climit="**Say what CHANGED, not just which step you are on.** The same work reported in the
+same words **$CIRCLE_BEATS times running** is named **GOING IN CIRCLES** by
+\`$SELF_CMD stalled\`, which quotes the repeated line back at the ECH with your unit and
+tier beside it (\`$CIRCLE_BEATS\` beats; the ECH sets it with \`LCARS_ECH_CIRCLE_BEATS\`).
+Nothing kills you for it and it is not a verdict: the ECH re-briefs you with a different
+approach, replaces you, or raises the call you are circling on with the captain.
+
+**Repeating a STEP is fine — repeating your ACCOUNT of it is the problem.** A long step
+should produce several beats, each saying what moved in it (\"scope gate red on
+src/other.py\" → \"narrowed it to a stale symlink\" → \"removed it, re-running the gate\").
+The run restarts on an advancing \`--step K/N\`, and **one beat describing different work
+clears the line**. The ECH compares your own words and nothing else — it has no process,
+no path and no working tree of yours to look at, so a step you are genuinely grinding on
+is indistinguishable from a loop unless you say what is happening inside it."
+
   local signoff="Minted by the ECH for unit **$unit** at tier **$tier**.
 The judgement is recorded at \`units.$unit\` in \`$APJSON\`; its reason was:
 *$why*
@@ -7663,12 +7690,13 @@ from."
   printf '%s\n' "$tpl" >"$tfile" || die "delegate: could not stage the template in $ddir"
   "$PY" - "$bpath" "$tfile" "$did" "$unit_i" "$tier" "$why" "$est" "$goal" "$mission" \
         "$statepath" "$contract" "$verbs" "$bounds" "$stamp" "$signoff" \
-        "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" "$estamp" "$front" <<'PYREND' \
+        "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" "$estamp" "$front" \
+        "$climit" <<'PYREND' \
     || die "delegate: could not render the brief to $bpath"
 import sys
 (out, tfile, did, unit, tier, why, est, goal, mission, statepath,
  contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver, blimit,
- launcher, estamp, front) = sys.argv[1:23]
+ launcher, estamp, front, climit) = sys.argv[1:24]
 tpl = open(tfile).read()
 slots = {
     "DELEGATE_ID": did, "UNIT": unit, "TIER": tier, "TIER_WHY": why,
@@ -7687,6 +7715,10 @@ slots = {
     # S351. Composed by the caller from BEAT_LIMIT, so the brief states the
     # limit it was MINTED under and never a default it was not held to.
     "BEAT_LIMIT": blimit,
+    # S359 FIX ROUND 1 (D1). The SAME contract for the repetition limit: the
+    # lane that judges a delegate's beats is named in the brief those beats are
+    # promised by, with the threshold actually applied.
+    "CIRCLE_LIMIT": climit,
     # S351. The absolute launcher, so the beat command in § 2 is runnable as it
     # stands rather than a placeholder the delegate has to go and resolve.
     "LAUNCHER": launcher,
@@ -8273,25 +8305,56 @@ for k in sorted((d.get("delegates") or {})):
     # step climbs is working, not circling — and on a step record that cannot be
     # read, which is where the motion loop restarts too. A beat with no step at
     # all neither advances nor restarts: it is counted as work, like any other.
-    circ, c_high, c_count, c_line = {}, None, 0, ""
+    #
+    # S359 FIX ROUND 1 (D2 + D3) — THE REPEATS MUST BE CONSECUTIVE, AND THE
+    # TALLY HAS TO BE ABLE TO GO DOWN. The first version counted every line in a
+    # dict over the whole run and kept a RUNNING MAXIMUM. That broke the lane
+    # twice over, and in a way the report itself could not see:
+    #
+    #   D2. `c_count` only ever INCREASED, and the dict reset on an advancing
+    #       step did not touch it. So an accusation LATCHED for the delegate's
+    #       whole life: a worker that looped at 4/7 and then climbed 5/7, 6/7,
+    #       7/7 on three DIFFERENT lines was still reported GOING IN CIRCLES
+    #       "at step 7/7", quoting back a line never reported at that step. The
+    #       report states TWO clearing conditions in its own words — different
+    #       work, or an advancing step — and NEITHER of them worked.
+    #
+    #   D3. A dict over the whole run does not care whether the repeats are
+    #       ADJACENT. "waiting on the suite" / "t-001 green, 3 files changed" /
+    #       "waiting on the suite" / "t-002 red as expected" / "waiting on the
+    #       suite" was accused — a delegate visibly shipping work, told that
+    #       "nothing in its own account of it has changed". And with no `--step`
+    #       at all (the documented default for every caller minted before S354)
+    #       there is no run window either, so that delegate's whole lifetime was
+    #       one run.
+    #
+    # So the tally is now the length of the CURRENT TRAILING RUN of one piece of
+    # work: a DIFFERENT line resets it to 1, an advancing or unreadable step
+    # resets it to 0, and that is what makes both clearing conditions the report
+    # prints REAL rather than prose. Nothing the lane was built to catch is given
+    # up — a real loop (the capstone's t-001, the identical gate command run
+    # again and again) is consecutive by construction.
+    c_high, c_key, c_count, c_line = None, None, 0, ""
     for b in beats:
         if not isinstance(b, dict):
             continue
         if "step" in b:
             reported = step_value(b["step"])
             if reported is None or c_high is None or reported[0] > c_high:
-                circ = {}
+                # A RUN RESTART CLEARS THE TALLY TOO (D2). Emptying the window
+                # and leaving the count behind was the whole latch.
+                c_key, c_count, c_line = None, 0, ""
                 c_high = reported[0] if reported is not None else None
         key = circle_key(b.get("line"))
         if not key:
+            # A beat with nothing to compare is not work reported again — and it
+            # is not DIFFERENT work either, so it neither counts nor interrupts.
             continue
-        entry = circ.get(key)
-        if entry is None:
-            circ[key] = entry = [0, ""]
-        entry[0] += 1
-        entry[1] = b.get("line") or ""
-        if entry[0] > c_count:
-            c_count, c_line = entry[0], entry[1]
+        if key == c_key:
+            c_count += 1
+        else:
+            c_key, c_count = key, 1
+        c_line = b.get("line") or ""
     going_in_circles = int(status != "done" and c_count >= circle_limit)
     # THE ROW CARRIES ITS OWN COLUMN NAMES (S352 fix round 2, Item 2). ONE
     # literal holds both the name and the value of every column, so those two

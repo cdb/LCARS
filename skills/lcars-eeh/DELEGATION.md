@@ -267,15 +267,27 @@ Silence says nothing came back; `BLOCKED` says the delegate asked for something;
 BEATING BUT NOT MOVING says the step is not climbing. None of the three sees the
 delegate that is busy, talking, and doing **the same work over and over**. So a
 beat reporting work the delegate has **already reported in the same words** three
-times in one run is named GOING IN CIRCLES, with its own tally, the work that
+times **running** is named GOING IN CIRCLES, with its own tally, the work that
 repeated quoted back, how many times, the threshold applied and the next action.
 `LCARS_ECH_CIRCLE_BEATS` overrides the threshold (whole numbers from 2 to 1000,
-default 3); one report of a piece of work cannot show a repetition. The run
-restarts on an **advancing** `--step K/N`, so a delegate that repeats a line
-while its step climbs is working, not circling. A `done` delegate is never
-reported. The actions are the same three real verbs — re-brief it with a
-*different* approach, replace it, or raise the call it is circling on with the
-captain — and **a kill is not among them**: there is still no pid for a delegate.
+default 3); one report of a piece of work cannot show a repetition.
+
+**The repeats have to be CONSECUTIVE, and the line CLEARS.** The tally is the
+length of the delegate's *current* run of one piece of work, not a count over its
+whole life, because both of those matter to whether the lane can be trusted. A
+**different** beat resets it, so real work interleaved between repeats — "waiting
+on the suite" / "t-001 green, 3 files changed" / "waiting on the suite" — is not
+a circle and is not reported as one; and an **advancing** `--step K/N` restarts
+the run, so a delegate that repeats a line while its step climbs is working, not
+circling. Those are the two things the report names as clearing the line, and
+they clear it for real: one beat of different work is enough, and an accusation
+cannot outlive the loop that earned it. The brief a delegate is handed **states
+this threshold** alongside the silence limit, so the obligation travels with the
+hand-off, and § 2's beat example asks for *what changed* rather than a line
+computed from K and N — a brief whose own example repeats itself manufactures the
+accusation it warns about. A `done` delegate is never reported. The actions are
+the same three real verbs — re-brief it with a *different* approach, replace it,
+or raise the call it is circling on with the captain — and **a kill is not among them**: there is still no pid for a delegate.
 
 **Why it is keyed on THE WORK and never on the step not incrementing.** The
 signature was read out of the S353 capstone's own records rather than guessed.
