@@ -7399,7 +7399,6 @@ captain uses — and never hand-step the stage machine underneath them
 - \`lcars log\` — file a bug you found against this Mission. This is how a defect
   gets fixed; you do not fix it by editing around it.
 - \`lcars answer\` — answer a gate the factory is waiting on.
-- \`lcars replan\` — re-anchor ONE ticket whose premises the code contradicts.
 - \`bash $SELF exec <skill>/<script>\` — reach a sibling skill's own script by the
   route that resolves under either install, with that script's real flags.
 - **Screens go through the HOLODECK.** Any work with a user-visible surface takes
@@ -7436,8 +7435,9 @@ the unit itself. So absorb it — **through the factory's own verbs**:
 
 - a **defect in the work** -> \`lcars log\` it against this Mission and let the
   factory fix it;
-- a **ticket whose premises the code contradicts** -> \`lcars replan\` that one
-  ticket;
+- a **ticket whose premises the code contradicts** -> UP to the ECH, through a
+  \`BLOCKED:\` beat. You do not re-anchor the ticket yourself: there is no verb
+  for it in your list, and a rewritten premise is a plan decision;
 - a **question only the ECH can settle** -> UP to the ECH, through a
   \`BLOCKED:\` beat — the command is at the end of this section. You do not run
   \`$SELF_CMD ask\`: that verb prints \"QUESTION FOR THE CAPTAIN\" and fires his

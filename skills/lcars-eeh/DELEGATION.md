@@ -515,7 +515,7 @@ and the Holodeck sequence are written for the ECH, and **a delegate never reads
 them**. So the rule travels with the hand-off.
 
 **Drive through the HUMAN interfaces. Never hand-step the stage machine.** The
-verbs, named: `lcars file`, `lcars log`, `lcars answer`, `lcars replan`,
+verbs, named: `lcars file`, `lcars log`, `lcars answer`,
 `lcars-ech exec <skill>/<script>`, and **the Holodeck route for any screen
 work** (derive — the wait is asynchronous — then promote inside one of its two
 legal scopes).
@@ -539,8 +539,10 @@ This is the clause that makes T1 worth having without making it dangerous. A
 delegate absorbs a stumble **through the factory's own verbs**:
 
 - a **defect in the work** → `lcars log` it against the Mission;
-- a **ticket whose premises the code contradicts** → `lcars replan` that one
-  ticket;
+- a **ticket whose premises the code contradicts** → **UP to the ECH, through a
+  `BLOCKED:` beat** (below). A delegate does **not** re-anchor the ticket
+  itself: there is no delegate-facing verb for it, and a rewritten premise is a
+  plan decision;
 - a **question only the ECH can settle** → **UP to the ECH, through a
   `BLOCKED:` beat** (below). A delegate does **not** run `lcars-ech ask`: that
   verb prints *QUESTION FOR THE CAPTAIN* and fires his notifier, and the

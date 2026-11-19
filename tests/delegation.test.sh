@@ -263,6 +263,25 @@ PY
 # MODEL, which is the one confusion that would make these assertions lie.
 eng_col() { printf '%s\n' "$1" | awk -v r="$2" -v c="$3" '$1==r {print $c; exit}'; }
 
+# brief_front_doors_resolve <brief> — EVERY `lcars <verb>` a minted brief names
+# must resolve to a REAL front door: `skills/lcars-<verb>/SKILL.md` on disk, or
+# an explicit arm of the `lcars` router. A brief is the ONLY copy of the rules a
+# delegate reads, so a verb named there that the product does not have is not a
+# documentation slip — it is a route the delegate is told to take and cannot,
+# which leaves it no legal move but to escalate. `lcars replan` was exactly
+# that. Prints each unresolved verb so a red is diagnosable, not just red.
+brief_front_doors_resolve() {
+  local brief="$1" verb bad=0
+  local router="$REPO_ROOT/skills/lcars/lcars.sh"
+  for verb in $(grep -oE '\blcars [a-z][a-z-]*' "$brief" | awk '{print $2}' | sort -u); do
+    [ -f "$REPO_ROOT/skills/lcars-$verb/SKILL.md" ] && continue
+    grep -qE "^[[:space:]]+$verb\)" "$router" && continue
+    printf '    NO FRONT DOOR for a verb the brief names: `lcars %s`\n' "$verb"
+    bad=1
+  done
+  return $bad
+}
+
 # The public seams are record, budget, delegate, drive and answered. Only the
 # allowance endpoint is faked; the reader, engine resolver and ledger are real.
 s356_case() { [ -z "${LCARS_S356_CASE:-}" ] || [ "$LCARS_S356_CASE" = "$1" ]; }
@@ -3062,8 +3081,32 @@ S352_SIGPIPE_SHAPE="awk .[/][^/]*[/],0.[^|]*[|] *grep +-[a-zA-Z]*q"
 check "no \`awk\` range-to-EOF in this suite's CODE is piped into a \`grep -q\` (the SIGPIPE flake)" \
   "! sed '/^[[:space:]]*#/d' '$DIR/delegation.test.sh' \
      | grep -E \"\$S352_SIGPIPE_SHAPE\" >/dev/null"
-check "a contradicted premise → \`lcars replan\`" \
-  "grep -q 'lcars replan' '$BG'"
+# ==== S358: THE BRIEF MAY NOT NAME A VERB THE PRODUCT DOES NOT HAVE =======
+# IT USED TO READ:
+#   check "a contradicted premise → \`lcars replan\`" \
+#     "grep -q 'lcars replan' '$BG'"
+# and it was GREEN on a brief that told a delegate to run a verb which does not
+# exist: there is no `skills/lcars-replan/`, and `tests/doc-claims.test.sh` was
+# red on the same two words in DELEGATION.md. The case is real and stays NAMED —
+# a delegate must still know what to do when a ticket's premises are contradicted
+# — but its route is now the `BLOCKED:` beat, the THIRD bullet of this same
+# section, so the mechanism already exists and the doctrine is unchanged. The
+# `:542` copy sat INSIDE the absorption clause whose escalation count decides
+# whether the tier design survives a live run, so an impossible route there is a
+# confound in that measurement, not a typo.
+check "the brief names NO \`lcars\` verb the product lacks (\`lcars replan\` is gone)" \
+  "brief_front_doors_resolve '$BG'"
+check "a contradicted premise is STILL a named case in the absorption route" \
+  "grep -q 'premises the code contradicts' '$BG'"
+check "…named EXACTLY once — the retired verb-list entry went with it" \
+  "[ \"\$(grep -c 'premises the code contradicts' '$BG')\" = 1 ]"
+check "…and its route is the \`BLOCKED:\` beat, not a verb that does not exist" \
+  "grep -A3 'premises the code contradicts' '$BG' | grep 'BLOCKED:' >/dev/null"
+# THE CONTROL. A check that only ever looks for an ABSENCE cannot tell a correct
+# brief from an empty file. `lcars log` is a verb the product DOES have, it is
+# named in this very section, and it must still pass the same resolver.
+check "CONTROL: \`lcars log\` is a real front door, still named, still resolving" \
+  "grep -q 'lcars log' '$BG' && [ -f '$REPO_ROOT/skills/lcars-log/SKILL.md' ] && brief_front_doors_resolve '$BG'"
 check "a question only the ECH can settle → up, via the ECH's own \`ask\`" \
   "grep -q 'ask' '$BG'"
 check "HACKING PAST A RED TEST is named as NOT absorption" \
