@@ -742,7 +742,51 @@ PB_wait='## 8. Waiting, two missions at a time, and the crontab heartbeat'
 PB_answer_pending='## 9. The interrupt budget — what actually reaches the captain'
 PB_done='## 10. Wrap-up — lead with the time the captain got back'
 
-playbook_heading() {
+# WHICH PART TO READ, NOT JUST WHICH HEADING (S358 fix round 1).
+#
+# THE DEFECT. The heading above is the ONLY surface that tells a supervisor
+# where to look, and the playbook it points into is 1,512 lines. S358 made that
+# file readable in seven parts by reader and moment — `lcars-eeh docs ech-verify`
+# hands a seat standing at the gate its 289 lines and nothing else — but NOTHING
+# ROUTED ANYBODY TO A PART. This driver did not carry one part name anywhere, so
+# the seat that could have read 289 lines read all 1,512, and the split was a
+# feature with no entrance. The PLAYBOOK line now also names the part.
+#
+# THE PART IS DERIVED, NEVER REDECLARED. `lcars-eeh docs --part-of <heading>`
+# answers out of the SAME manifest the printer cuts with, so there is exactly
+# one mapping in the product. A copy of it here would be a second one, and two
+# copies of a mapping drift — silently, because this driver would go on naming a
+# part that had moved and the line would still look right.
+#
+# IT DEGRADES TO EXACTLY THE OLD LINE. If the resolver cannot answer — an older
+# sibling, a heading that is no longer in the file — this adds nothing and the
+# PLAYBOOK line is byte-identical to the one that shipped. A citation is never
+# worth failing a decision over, and a dangling `(docs …)` pointer would be
+# worse than none.
+playbook_part() { # <a whole playbook heading line> -> " (lcars-eeh docs <part>)" or ""
+  local part
+  part="$(bash "$SELF_DIR/eeh.sh" docs --part-of "$1" 2>/dev/null)" || return 0
+  [ -n "$part" ] || return 0
+  printf ' (lcars-eeh docs %s)' "$part"
+}
+
+# playbook_cite <heading> -> the heading plus the part that serves it.
+#
+# IT IS APPLIED IN THE TWO HEADING ACCESSORS, NOT AT THE `say` CALL SITES, and
+# that is a constraint rather than a preference: `tests/delegation.test.sh`
+# (S353) pins `cmd_next`'s body against `main` and asserts the ONLY executable
+# line it has gained is one call to the delegate reporter. Editing the three
+# `say "PLAYBOOK: …"` lines inside it would read as three more, and that guard
+# is right to hold. Citing in the callee leaves every call site byte-identical
+# to the shipped driver and still changes what every one of them prints.
+playbook_cite() { printf '%s%s' "$1" "$(playbook_part "$1")"; }
+
+# THE TABLE'S CONTRACT IS THE VERBATIM HEADING, and this is the function that
+# serves it. `cmd_playbook` publishes action -> heading and the suites assert
+# every heading in it exists WORD FOR WORD in the installed playbook; a citation
+# appended there would break that lock and would be wrong anyway — the table is
+# a machine record, not a line a human reads.
+playbook_heading_verbatim() {
   case "$1" in
     align)          printf '%s' "$PB_align" ;;
     captain-step)   printf '%s' "$PB_captain_step" ;;
@@ -758,10 +802,15 @@ playbook_heading() {
   esac
 }
 
+# AND THIS IS WHAT A `PLAYBOOK:` LINE PRINTS — the same heading, plus the part
+# of the playbook that serves it, so the one surface that says where to look
+# names something a seat can actually load.
+playbook_heading() { playbook_cite "$(playbook_heading_verbatim "$1")"; }
+
 cmd_playbook() {
   local a
   for a in align captain-step foundation holodeck file drive verify-gate land wait answer-pending done; do
-    printf '%s\t%s\n' "$a" "$(playbook_heading "$a")"
+    printf '%s\t%s\n' "$a" "$(playbook_heading_verbatim "$a")"
   done
 }
 
@@ -5703,10 +5752,12 @@ PY
   return 0
 }
 
+# `policy`'s own PLAYBOOK line, cited the same way. Its only caller is that one
+# `say`, so there is no verbatim consumer to split off here.
 policy_heading() {
   case "$1" in
-    merge|merge+follow-ups|override) printf '%s' "$PB_land" ;;
-    *)                               printf '%s' "$PB_verify_gate" ;;
+    merge|merge+follow-ups|override) playbook_cite "$PB_land" ;;
+    *)                               playbook_cite "$PB_verify_gate" ;;
   esac
 }
 

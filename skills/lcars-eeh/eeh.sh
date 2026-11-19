@@ -94,8 +94,31 @@ REPO="${LCARS_REPO:-$DEFAULT_REPO}"
 if [ "${1:-}" = "docs" ]; then
   shift
   want_path=0
-  case "${1:-}" in --path|-p) want_path=1; shift ;; esac
+  part_of=0
+  # --part-of <a WHOLE line of the playbook> -> the name of the part that serves
+  # it. THIS IS WHY ech.sh KEEPS NO MAPPING OF ITS OWN: the driver already knows
+  # the heading it is citing, and asking here derives the part from the manifest
+  # below. A second copy of that mapping in the driver is how the two drift, and
+  # the drift would be silent — the driver would go on naming a part that moved.
+  #
+  # THE ARMS STAY ON ONE LINE, and that is load-bearing: `tests/lib/doc_claims.py`
+  # models which flags this subcommand accepts by matching the literal
+  # `in --path|-p)` in this source, so breaking the `case` across lines made it
+  # read `docs` as taking NO flags and failed every `lcars-eeh docs --path`
+  # written in DELEGATION.md and ORCHESTRATION.md. Measured, not predicted.
+  case "${1:-}" in --path|-p) want_path=1; shift ;; --part-of) part_of=1; shift ;; esac
   name="${1:-}"
+  # WHERE THE intake->drive CUT GOES, AND WHY IT IS § 4a AND NOT § 5. A seat
+  # about to drive needs **Do not re-sequence stages yourself** — and that rule
+  # lives in § 5's opening paragraph with no argument behind it. Its argument is
+  # § 4a: the captain's 2026-10-13 ruling, the measured S291 evidence (five
+  # worker-fence breaches in one run, across both engines) and the DO / DO-NOT
+  # list. Anchored at § 5 this part served the rule and left the reason 427
+  # lines away in `ech-intake`, which is the ONE failure mode this whole split
+  # exists to avoid. THE AUTHOR'S OWN TYPOGRAPHY AGREES: every section break in
+  # the playbook is marked with a `---`, and with the anchor at § 5 this was the
+  # only cut of the six that did not land on one — it fell directly after § 4a's
+  # closing blockquote, mid-block. At § 4a all six land on a break.
   # <part-name>\t<the WHOLE LINE in the playbook that opens it>, in document
   # order. Exhaustive: part N runs to the line before part N+1's anchor, and the
   # last part runs to EOF, which is what makes the concatenation the whole file.
@@ -103,7 +126,7 @@ if [ "${1:-}" = "docs" ]; then
     cat <<'HCM_PARTS'
 ech-preflight	# HOLOGRAM-COMMAND-MODE.md — how to run LCARS *for* the captain
 ech-intake	## 1. The alignment round — one batch of questions, then walk away
-ech-drive	## 5. Drive it — backgrounded, with a waiter that watches the process
+ech-drive	## 4a. Drive through the HUMAN interfaces — never hand-step the stage machine
 ech-verify	## 6. The Verify gate — Number One, then the live check
 ech-land	## 7. Land it — approve, then the hygiene that always follows
 ech-wait	## 8. Waiting, two missions at a time, and the crontab heartbeat
@@ -112,6 +135,18 @@ HCM_PARTS
   }
   hcm_part_names() { hcm_manifest | cut -f1 | tr '\n' ' ' | sed 's/ $//'; }
   hcm_is_part()    { hcm_manifest | cut -f1 | grep -qxF "$1"; }
+  hcm_part_of() { # <a whole line of the playbook> -> the part serving it
+    # The LAST anchor at or above the line wins, which is exactly the partition
+    # the printer walks, so the two can never disagree. Whole-line equality, for
+    # the same reason `hcm_print_part` uses it: an anchor carries `.`, `*` and
+    # `—`, and a regex over those matches lines it was never meant to.
+    awk -F'\t' -v target="$1" '
+      NR == FNR { n += 1; pname[n] = $1; anchor[n] = $2; next }
+      { for (i = 1; i <= n; i++) if ($0 == anchor[i]) cur = pname[i]
+        if ($0 == target && cur != "") { print cur; found = 1; exit } }
+      END { if (!found) exit 1 }
+    ' <(hcm_manifest) "$SCRIPT_DIR/HOLOGRAM-COMMAND-MODE.md"
+  }
   hcm_print_part() { # <part-name> -> that part's bytes, on stdout
     local start end
     start="$(hcm_manifest | awk -F'\t' -v n="$1" '$1 == n { print $2; exit }')"
@@ -125,6 +160,15 @@ HCM_PARTS
       { print }
     ' "$SCRIPT_DIR/HOLOGRAM-COMMAND-MODE.md"
   }
+
+  if [ "$part_of" -eq 1 ]; then
+    if [ -z "$name" ] || ! hcm_part_of "$name"; then
+      echo "lcars eeh: --part-of needs a WHOLE heading line from the playbook; '${name}' is not one of its lines." >&2
+      echo "  parts: $(hcm_part_names)" >&2
+      exit 1
+    fi
+    exit 0
+  fi
 
   resolve_doc() { # <name> -> filename beside this script, or empty
     case "$1" in
