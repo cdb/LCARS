@@ -12690,6 +12690,47 @@ proof_ran_whole_suite() { # executed suiteSize → 0 when this run excluded NOTH
   [ "$s" -gt 0 ] 2>/dev/null || return 1
   [ "$n" -ge "$s" ] 2>/dev/null
 }
+# === AND THE RECORDED NUMBER IS NEVER TRUSTED OVER A FRESH ONE (S364 fix 1) ==
+# DEFECT C, MEASURED 20 Nov 2026 on this repo's own mkflatrepo fixture, with
+# `suiteSize` set to EXACTLY what a probe would have recorded:
+#
+#   suiteSize when probed   control ran   leg ran   verdict
+#            2                   4           2      inconclusive  ← honest 2x
+#            3                   5           2      pass             narrowing,
+#            5                   7           2      pass             PARKED
+#
+# Because the empty-scope control nearly always runs the WHOLE CURRENT SUITE
+# (measured: 22 of 22, 4 of 4 — an empty scope leaves the selection with
+# nothing and the runner falls back to its own discovery), the "both numbers"
+# rule collapsed to a SINGLE test of the leg against a number NOTHING
+# REFRESHES. No probe runs again on its own, so stale-low is the permanent
+# steady state of a growing repo: confirmed at 10x, a suite grown to 22 with
+# `suiteSize` still 2 turned an honest 2-test leg inconclusive.
+#
+# THE CONTROL IS ITSELF A FRESH MEASUREMENT of the whole suite in exactly the
+# case this comparison fires — the runner ignored an empty scope and ran
+# everything. So when the control EXCEEDS the record, the control is the better
+# number, and the rule is kept against the larger of the two.
+#
+#   case                      suiteSize  control   leg   effective   verdict
+#   the capstone shape             7381     7393  7400        7393   unproven
+#   a genuinely narrowed leg       7381        0    53        7381   proven
+#   Defect C                          2        4     2           4   proven
+#   Defect C, suite grown             2       22     2          22   proven
+#
+# It is a TIGHTENING OF THE RECORD, NEVER OF THE VERDICT: the effective size is
+# >= the recorded one, so every leg this rule calls `unproven` was already
+# called `unproven` by the recorded number alone. Nothing that passed before
+# can start failing; only a stale record stops parking honest work. With NO
+# `suiteSize` recorded it still prints nothing and the comparison stays inert.
+proof_effective_suite() { # recorded control → the size to judge against, or ""
+  local rec="${1:-}" ctl="${2:-}"
+  case "$rec" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$rec" -gt 0 ] 2>/dev/null || return 0
+  case "$ctl" in ''|*[!0-9]*) printf '%s' "$rec"; return 0 ;; esac
+  [ "$ctl" -gt "$rec" ] 2>/dev/null && { printf '%s' "$ctl"; return 0; }
+  printf '%s' "$rec"
+}
 PROOF_SCOPE_CONTROL=""   # "<runner> <executed>" | "" when it could not be read
 # PROOF_SCOPE_CONTROL_ZERO (S308 fix round 3) — the control run COLLECTED NO
 # TESTS AT ALL, in its runner's OWN words. This is NOT a nicety: it is what
@@ -14900,7 +14941,7 @@ flip_flop_gate() { # ticket parent-sha worktree
         # of declared files; a leg that stopped early on a red file runs fewer
         # and is the one shape this comparison can miss (it ends in a FAIL,
         # which blocks, never in a pass).
-        local ctl_n=1 ctl_want ctl_hit="" ctl_one ff_suite=""
+        local ctl_n=1 ctl_want ctl_hit="" ctl_one ff_suite="" ff_suite_rec=""
         case "$FF_GATE_SCOPE_KIND" in
           files) ctl_n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
                  case "$ctl_n" in ''|*[!0-9]*) ctl_n=1 ;; esac ;;
@@ -14961,20 +15002,38 @@ flip_flop_gate() { # ticket parent-sha worktree
   what the TIP leg ran: $FF_TIP_CMD
 Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a test file at the path it was handed, so the runner received an EMPTY argument list and fell back to discovering its own tests. Either widen the command's own selection so it matches the ticket's test file(s), hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects." "$rels"
           return $?
-        elif ff_suite="$(proof_suite_size "$wt")"; [ -n "$ff_suite" ] \
+        elif ff_suite_rec="$(proof_suite_size "$wt")"; \
+             ff_suite="$(proof_effective_suite "$ff_suite_rec" "${PROOF_SCOPE_CONTROL##* }")"; \
+             [ -n "$ff_suite" ] \
            && proof_ran_whole_suite "${PROOF_SCOPE_CONTROL##* }" "$ff_suite" \
            && proof_ran_whole_suite "${FF_TIP_EXEC##* }" "$ff_suite"; then
           # S364 — THE COMPARISON THE CONTROL NEVER MADE. See
           # proof_suite_size/proof_ran_whole_suite for the capstone measurement
           # and for why BOTH numbers have to be the whole suite before this
-          # fires. Reached only when the two counts DIFFER (the same-count
-          # branch above owns the equal case) — the capstone's 7393 vs 7400
-          # against a suite of 7381, which read as a narrowing and was not one.
+          # fires, and proof_effective_suite for why the RECORDED size is never
+          # trusted over the control's fresh one (fix round 1, DEFECT C — a
+          # stale-low record parked honest work). Reached only when the two
+          # counts DIFFER (the same-count branch above owns the equal case) —
+          # the capstone's 7393 vs 7400 against a suite of 7381, which read as
+          # a narrowing and was not one.
           FF_GATE_SCOPE_NARROWING=unproven
-          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with an EMPTY scope and this leg executed ${FF_TIP_EXEC##* } with the ticket's file(s)${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}, and BOTH are the repo's whole suite of ${ff_suite} recorded tests (suiteSize in .git/lcars/config.json) — so the scope excluded NOTHING and the difference between the two numbers is not a narrowing. Refresh the recorded size with \`lcars update --probe-tests\` if this repo's suite has grown"
+          # WHERE THE SIZE CAME FROM, in the record: the recorded suiteSize, or
+          # the control's own fresh count when that is the larger of the two.
+          local ff_suite_src=" (suiteSize in .git/lcars/config.json)"
+          if [ "$ff_suite" != "$ff_suite_rec" ]; then
+            ff_suite_src=" (the control itself measured that, against a recorded suiteSize of ${ff_suite_rec}; the larger of the two is the one judged against)"
+          fi
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with an EMPTY scope and this leg executed ${FF_TIP_EXEC##* } with the ticket's file(s)${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}, and BOTH are the repo's whole suite of ${ff_suite} tests${ff_suite_src} — so the scope excluded NOTHING and the difference between the two numbers is not a narrowing"
         else
           FF_GATE_SCOPE_NARROWING=proven
-          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)${ff_suite:+, and fewer than the $ff_suite tests recorded for the whole suite}"
+          # The same sizing clause as the unproven arm, built the same way, so
+          # a passing record names the number it was judged against too.
+          local ff_suite_note=""
+          if [ -n "$ff_suite" ]; then
+            ff_suite_note=", and fewer than the ${ff_suite} tests this repo's whole suite runs"
+            [ "$ff_suite" = "$ff_suite_rec" ] || ff_suite_note="${ff_suite_note} as measured by that control, against a recorded suiteSize of ${ff_suite_rec}"
+          fi
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)${ff_suite_note}"
         fi
       fi ;;
     *)

@@ -3673,12 +3673,21 @@ report_probe() {
 # and correct, and a command that cannot narrow is a normal thing to find in a
 # repo nobody has pointed at LCARS before. What it does not get is the
 # certification: `TEST SYSTEMS ONLINE` is withheld, loudly, with the cure.
+#
+# AND IT NEVER REFUSES ON A FILE IT CANNOT SHOW THE DEFAULT RUN EXECUTES (fix
+# round 1, DEFECT A). Round 0 refused a CORRECT command because the file it
+# measured with sat outside that command's own selection — see
+# lcars_probe_test_files for the measurement and lcars_probe_narrowing for the
+# two-measurement verdict that replaced it.
 NARROW_OUTCOME=""   # narrows | cannot-narrow | moot | inconclusive
-NARROW_FULL=""      # executed count with the WHOLE SUITE in scope
+NARROW_FULL=""      # executed count with NO scope at all (the whole suite)
+NARROW_EMPTY=""     # executed count with the scope pointed at an EMPTY dir
 NARROW_SCOPED=""    # executed count with ONE test file in scope
 NARROW_FILE=""      # the test file handed over as that scope (repo-relative)
+NARROW_FILE_SEEN="" # 1 when the whole-suite run's own output NAMED that file
 NARROW_WHY=""
 NARROW_CURE=""
+_NARROW_RUN_RC=0
 
 # lcars_probe_executed_count <runner-output> → "<runner> <executed>" | ""
 # EXECUTED, not COLLECTED: every arm sums the tests that actually RAN, so a
@@ -3758,11 +3767,34 @@ if m:
 ' 2>/dev/null
 }
 
-# lcars_probe_test_files — the repo's TRACKED test files, SMALLEST FIRST.
-# Smallest first on purpose: the scope has to be a file that holds some of the
-# suite and not all of it, and byte size is the cheapest honest proxy for "few
-# tests". Tracked only (`git ls-files`), so a stray editor backup or a
-# node_modules copy can never be chosen as the measuring instrument.
+# lcars_probe_test_files [whole-suite-output] — the repo's TRACKED test files,
+# the ones the WHOLE-SUITE RUN DEMONSTRABLY EXECUTED first, then the rest,
+# SMALLEST FIRST within each group.
+#
+# FIX ROUND 1, DEFECT A — WHY THE ORDER CHANGED. Smallest-first alone chose a
+# measuring file with NO CHECK THAT THE COMMAND'S OWN SELECTION CONTAINS IT.
+# MEASURED, 20 Nov 2026, on a repo whose script is the CORRECT form
+# (`node --test "${LCARS_TESTS_DIR:-tests/unit}"`): tests/unit/ held 2 cases in
+# 2 files, and tests/e2e/smoke.test.js — 3 one-line cases, never run by that
+# script — was the smallest tracked test file by bytes. The probe handed over
+# the e2e file, honestly measured 3 against the default suite's 2, and
+# `scoped >= full` read "the scope excluded nothing". A correct command was
+# refused at setup, and the only difference from an accepted repo was an
+# unrelated file. That shape is ORDINARY: an e2e or integration dir the unit
+# script does not run, example or fixture tests, a second package's tests in a
+# monorepo, a legacy dir — and it is easiest to hit on a young repo with a
+# small default suite, which is exactly the shape the capstone will use.
+#
+# So a file the default run can be SHOWN to have executed is preferred. That
+# demonstration is its path appearing in the whole-suite run's own output, which
+# is all several runners give (pytest, jest, vitest, mocha, rspec name every
+# file; node:test, measured on v26, names NONE of them in any reporter). When
+# nothing can be shown, the order falls back to smallest-first and the VERDICT
+# carries the weaker standing instead — see lcars_probe_narrowing, which will
+# not refuse a command on a file it cannot show the default run executes.
+#
+# Tracked only (`git ls-files`), so a stray editor backup or a node_modules
+# copy can never be chosen as the measuring instrument.
 lcars_probe_test_files() {
   ( cd "$TOPLEVEL" 2>/dev/null || exit 0
     "${LCARS_GIT_BIN:-git}" ls-files -z 2>/dev/null \
@@ -3770,6 +3802,13 @@ lcars_probe_test_files() {
       | "${LCARS_PYTHON_BIN:-python3}" -c '
 import os, re, sys
 pat = re.compile(r"(^test_.+|.+[._-]test|.+[._-]spec|.+Tests?)\.[A-Za-z0-9]+$")
+out = ""
+if len(sys.argv) > 1 and sys.argv[1]:
+    try:
+        with open(sys.argv[1], "rb") as stream:
+            out = stream.read().decode("utf-8", "replace")
+    except OSError:
+        out = ""
 rows = []
 for line in sys.stdin.read().splitlines():
     if not line:
@@ -3782,10 +3821,14 @@ for line in sys.stdin.read().splitlines():
         continue
     if not os.path.isfile(line):
         continue
-    rows.append((st.st_size, line))
-for _, p in sorted(rows):
-    print(p)
-' 2>/dev/null )
+    # The repo-relative path as a SUBSTRING: a runner printing an absolute path
+    # still contains it, and a bare basename deliberately does not match —
+    # `smoke.test.js` alone cannot show WHICH smoke.test.js ran.
+    seen = 1 if (out and line in out) else 0
+    rows.append((0 if seen else 1, st.st_size, line, seen))
+for _, _, p, seen in sorted(rows):
+    print("%d %s" % (seen, p))
+' "${1:-}" 2>/dev/null )
 }
 
 # lcars_narrowing_cure <recorded-cmd> → the corrected command, or nothing.
@@ -3796,16 +3839,39 @@ for _, p in sorted(rows):
 # REPLACING the selection, with the selection kept as its default so a plain
 # full-suite run is unchanged. Any other shape gets the RULE instead of an
 # example; a wrong example would be worse than none.
+#
+# FIX ROUND 1, DEFECT B — TWO CORRECTIONS.
+#  • THE DOUBLE WRAP. A script already written the right way
+#    (`node --test "${LCARS_TESTS_DIR:-tests/unit}"`) was wrapped a SECOND
+#    time, printing `"${LCARS_TESTS_DIR:-${LCARS_TESTS_DIR:-tests/unit}}"`. It
+#    expands correctly, which is why it survived round 0 — and it is the tell
+#    that the cure path fired on a repo that was already right. A token that
+#    already applies the scope is not a selection to be replaced, so no cure is
+#    offered for it at all.
+#  • THE SECOND REFUSAL. The cure was built ONLY from package.json's `test`
+#    script, so once the captain recorded a command of his own through
+#    `lcars update --test-command` — the verb the refusal itself prescribes —
+#    a second refusal had no example left to give and fell back to a bare
+#    placeholder. The recorded command's OWN words are now the fallback source.
 lcars_narrowing_cure() {
   "${LCARS_PYTHON_BIN:-python3}" - "$1" "$TOPLEVEL/package.json" <<'PY' 2>/dev/null
 import json, shlex, sys
 cmd, pkg = sys.argv[1], sys.argv[2]
-if "npm test" not in cmd and "npm run test" not in cmd:
-    sys.exit(0)
-try:
-    script = json.load(open(pkg))["scripts"]["test"]
-    toks = shlex.split(script)
-except Exception:
+toks = None
+if "npm test" in cmd or "npm run test" in cmd:
+    try:
+        toks = shlex.split(json.load(open(pkg))["scripts"]["test"])
+    except Exception:
+        toks = None
+if toks is None:
+    # The recorded command itself: what a SECOND refusal has to work from.
+    try:
+        toks = shlex.split(cmd)
+    except Exception:
+        sys.exit(0)
+# ALREADY APPLYING THE SCOPE — nothing here is a selection to replace, and
+# wrapping one again is the double wrap. The report says what to do instead.
+if any("LCARS_TESTS_DIR" in t for t in toks):
     sys.exit(0)
 for i, t in enumerate(toks):
     if i == 0 or t.startswith("-"):
@@ -3817,14 +3883,75 @@ for i, t in enumerate(toks):
 PY
 }
 
+# _lcars_narrow_run <cmd> <scope-path> → the EXECUTED count, or nothing.
+# ONE bounded run of the recorded command with $LCARS_TESTS_DIR pointed at
+# <scope-path>, read by the same counter as the whole-suite half. Prints
+# nothing when the run timed out or printed no count this probe can read; the
+# exit status lands in $_NARROW_RUN_RC either way. Lifted out of
+# lcars_probe_narrowing in fix round 1 because the verdict now needs TWO of
+# these and a copy of the runner would be a second thing to keep in step.
+_lcars_narrow_run() {
+  local cmd="$1" scope="$2" sout n
+  _NARROW_RUN_RC=0
+  sout="$(mktemp "${TMPDIR:-/tmp}/lcars-narrow.XXXXXX")" || return 0
+  ( cd "$TOPLEVEL" \
+    && LCARS_TESTS_DIR="$scope" \
+       perl -e 'alarm shift; exec @ARGV or exit 127' \
+       "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$sout" 2>&1
+  _NARROW_RUN_RC=$?
+  if [ "$_NARROW_RUN_RC" -eq 142 ]; then   # 128 + SIGALRM(14): the alarm fired
+    rm -f "$sout"; return 0
+  fi
+  n="$(lcars_probe_executed_count "$(cat "$sout" 2>/dev/null)")"
+  rm -f "$sout"
+  n="${n##* }"
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  printf '%s' "$n"
+}
+
 # lcars_probe_narrowing <recorded-cmd> <whole-suite-output-file>
-# Sets NARROW_OUTCOME / NARROW_FULL / NARROW_SCOPED / NARROW_FILE / NARROW_WHY
-# / NARROW_CURE. Costs ONE bounded run: the whole-suite half is read back from
-# the output run_probe already captured.
+# Sets NARROW_OUTCOME / NARROW_FULL / NARROW_EMPTY / NARROW_SCOPED /
+# NARROW_FILE / NARROW_FILE_SEEN / NARROW_WHY / NARROW_CURE. The whole-suite
+# half is read back from the output run_probe already captured; the other
+# halves cost one bounded run each.
+#
+# TWO MEASUREMENTS, AND A REFUSAL NEEDS BOTH (fix round 1, DEFECT A).
+#
+#   scope 1   AN EMPTY DIRECTORY → can this command SUBTRACT at all?
+#   scope 2   ONE REAL TEST FILE → what does a ticket-shaped scope select?
+#
+# ROUND 0 HAD ONLY SCOPE 2, and refused whenever it ran AT LEAST the whole
+# suite. MEASURED, 20 Nov 2026, that refused a CORRECT command: the measuring
+# file (tests/e2e/smoke.test.js, 3 cases) sat outside the command's own
+# selection (tests/unit, 2 cases), so the honest 3-against-2 read as "the scope
+# excluded nothing". `scoped >= full` cannot tell a REPLACEMENT by a bigger
+# file from an APPEND, because both run more tests than the default suite.
+#
+# THE EMPTY SCOPE DOES TELL THEM APART, and it is the same instrument the proof
+# gate's own narrowing control already uses. MEASURED, 20 Nov 2026:
+#
+#   command                                        full  empty  one file
+#   node --test "${LCARS_TESTS_DIR:-tests/unit}"      2      0         3
+#   node --test tests/ (scope APPENDED by npm)        3      3         4
+#   node --test $(find "$LCARS_TESTS_DIR" …)          3      3         1
+#
+# An empty scope that takes the whole suite away proves the scope is APPLIED —
+# row 1, accepted on one run, no file needed. An empty scope that changes
+# nothing is ambiguous, because a selection built with `find` degenerates to
+# the runner's own discovery when it comes back empty (row 3, which narrows
+# honestly) — so the file measurement decides those. A command is REFUSED only
+# when an empty scope took nothing away AND a real test file took nothing away:
+# row 2, where every scope only ever ADDS.
+#
+# NEVER REFUSE ON A FILE YOU CANNOT SHOW THE DEFAULT RUN EXECUTES. When the
+# empty-scope run cannot be read at all, the file measurement alone refuses
+# only if the whole-suite run NAMED that file in its own output
+# (NARROW_FILE_SEEN); otherwise the outcome is "not measured", which keeps
+# TEST SYSTEMS ONLINE. A false refusal at setup is worse than the bug.
 lcars_probe_narrowing() {
-  NARROW_OUTCOME=inconclusive; NARROW_FULL=""; NARROW_SCOPED=""; NARROW_FILE=""
-  NARROW_WHY=""; NARROW_CURE=""
-  local cmd="$1" out="${2:-}" full files n sout rc=0 scoped
+  NARROW_OUTCOME=inconclusive; NARROW_FULL=""; NARROW_EMPTY=""; NARROW_SCOPED=""
+  NARROW_FILE=""; NARROW_FILE_SEEN=""; NARROW_WHY=""; NARROW_CURE=""
+  local cmd="$1" out="${2:-}" full files n scoped empty emptydir row
   [ -n "$cmd" ] || { NARROW_WHY="no test command was recorded"; return 0; }
   full="$(lcars_probe_executed_count "$(cat "$out" 2>/dev/null)")"
   full="${full##* }"
@@ -3845,7 +3972,7 @@ lcars_probe_narrowing() {
       NARROW_WHY="a \`unittest discover -s\` command can only be handed a DIRECTORY, so a single test file cannot be used as a scope and this probe cannot measure whether the command narrows"
       return 0 ;;
   esac
-  files="$(lcars_probe_test_files)"
+  files="$(lcars_probe_test_files "$out")"
   n="$(printf '%s\n' "$files" | grep -c . | tr -d '[:space:]')"
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   if [ "$n" -lt 2 ]; then
@@ -3853,36 +3980,54 @@ lcars_probe_narrowing() {
     NARROW_WHY="this repo tracks ${n} test file(s), so no scope could ever run less than its whole suite — there is no narrowing to measure (the same filesystem fact the proof gate records as 'moot')"
     return 0
   fi
-  NARROW_FILE="$(printf '%s\n' "$files" | grep . | head -1)"
-  sout="$(mktemp "${TMPDIR:-/tmp}/lcars-narrow.XXXXXX")" || return 0
-  ( cd "$TOPLEVEL" \
-    && LCARS_TESTS_DIR="$TOPLEVEL/$NARROW_FILE" \
-       perl -e 'alarm shift; exec @ARGV or exit 127' \
-       "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$sout" 2>&1
-  rc=$?
-  if [ "$rc" -eq 142 ]; then          # 128 + SIGALRM(14): the alarm fired
-    NARROW_WHY="the scoped run exceeded ${PROBE_TIMEOUT}s and was terminated, which says nothing either way about the narrowing"
-    rm -f "$sout"; return 0
+
+  # MEASUREMENT 1 — AN EMPTY SCOPE. A real directory holding no test file: the
+  # scope is a PATH THAT EXISTS, so nothing here measures the runner's reaction
+  # to a missing one.
+  emptydir="$(mktemp -d "${TMPDIR:-/tmp}/lcars-narrow-empty.XXXXXX")" || return 0
+  empty="$(_lcars_narrow_run "$cmd" "$emptydir")"
+  rm -rf "$emptydir"
+  NARROW_EMPTY="$empty"
+  if [ -n "$empty" ] && [ "$empty" -lt "$full" ] 2>/dev/null; then
+    NARROW_OUTCOME=narrows
+    NARROW_WHY="it executed ${full} test(s) with no scope at all and ${empty} with the scope pointed at an EMPTY directory — the scope is APPLIED, so a ticket's file(s) select what runs instead of being added to it"
+    return 0
   fi
-  scoped="$(lcars_probe_executed_count "$(cat "$sout" 2>/dev/null)")"
-  scoped="${scoped##* }"
-  rm -f "$sout"
-  case "$scoped" in ''|*[!0-9]*)
-    NARROW_WHY="the run with ${NARROW_FILE} in scope printed no test count this probe can read (exit ${rc}), so there is nothing to compare against the whole suite's ${NARROW_FULL}"
-    return 0 ;;
-  esac
+
+  # MEASUREMENT 2 — ONE REAL TEST FILE, preferring one the whole-suite run
+  # NAMED in its own output (lcars_probe_test_files orders those first).
+  row="$(printf '%s\n' "$files" | grep . | head -1)"
+  NARROW_FILE="${row#* }"
+  case "$row" in 1\ *) NARROW_FILE_SEEN=1 ;; esac
+  scoped="$(_lcars_narrow_run "$cmd" "$TOPLEVEL/$NARROW_FILE")"
+  if [ "$_NARROW_RUN_RC" -eq 142 ]; then
+    NARROW_WHY="the scoped run exceeded ${PROBE_TIMEOUT}s and was terminated, which says nothing either way about the narrowing"
+    return 0
+  fi
+  if [ -z "$scoped" ]; then
+    NARROW_WHY="the run with ${NARROW_FILE} in scope printed no test count this probe can read (exit ${_NARROW_RUN_RC}), so there is nothing to compare against the whole suite's ${NARROW_FULL}"
+    return 0
+  fi
   NARROW_SCOPED="$scoped"
   if [ "$scoped" -eq 0 ]; then
     # Zero with a REAL test file in scope is not a narrowing: a command that
     # refuses the scope outright looks exactly the same. Never a pass.
     NARROW_WHY="the run executed NO tests at all with a real test file (${NARROW_FILE}) in scope, which cannot be told apart from a command that rejects the scope outright"
-  elif [ "$scoped" -ge "$full" ] 2>/dev/null; then
-    NARROW_OUTCOME=cannot-narrow
-    NARROW_CURE="$(lcars_narrowing_cure "$cmd")"
-    NARROW_WHY="it executed ${scoped} test(s) with ONLY ${NARROW_FILE} in scope and ${full} with the whole suite in scope — the scope excluded nothing"
-  else
+  elif [ "$scoped" -lt "$full" ] 2>/dev/null; then
     NARROW_OUTCOME=narrows
     NARROW_WHY="it executed ${full} test(s) with the whole suite in scope and ${scoped} with ONLY ${NARROW_FILE} in scope — the scope genuinely selects"
+  elif [ -n "$empty" ] || [ -n "$NARROW_FILE_SEEN" ]; then
+    # BOTH SCOPES TOOK NOTHING AWAY. Reached only when the empty-scope run was
+    # READ and ran at least the whole suite (the `-lt` arm above returned
+    # otherwise), or when the whole-suite run itself named this file, so the
+    # file is one the default selection demonstrably contains.
+    NARROW_OUTCOME=cannot-narrow
+    NARROW_CURE="$(lcars_narrowing_cure "$cmd")"
+    NARROW_WHY="it executed ${scoped} test(s) with ONLY ${NARROW_FILE} in scope, ${full} with the whole suite in scope${empty:+, and ${empty} with the scope pointed at an EMPTY directory} — every scope only ever ADDS to what it already runs"
+  else
+    # The file ran at least the whole suite, and nothing here can show that the
+    # default run executes that file — the DEFECT A shape. Not measured.
+    NARROW_WHY="the run with ${NARROW_FILE} in scope executed ${scoped} test(s) against the whole suite's ${NARROW_FULL}, and the run with an EMPTY scope printed no count this probe can read — so it cannot be shown whether that file is one the command's own selection contains, and a command is never refused on a file this probe cannot show the default run executes"
   fi
   return 0
 }
@@ -3896,27 +4041,44 @@ lcars_report_narrowing() {
   case "$NARROW_OUTCOME" in
     narrows)
       echo "  ✓ NARROWING VERIFIED — the recorded command obeys a per-ticket scope:"
-      echo "    ${NARROW_FULL} test(s) with the whole suite in scope, ${NARROW_SCOPED} with only ${NARROW_FILE}." ;;
+      if [ -n "$NARROW_SCOPED" ]; then
+        echo "    ${NARROW_FULL} test(s) with the whole suite in scope, ${NARROW_SCOPED} with only ${NARROW_FILE}."
+      else
+        echo "    ${NARROW_FULL} test(s) with no scope at all, ${NARROW_EMPTY} with the scope pointed at an empty directory."
+      fi ;;
     cannot-narrow)
       echo "  ✗ TEST SYSTEMS CANNOT NARROW — this command runs the WHOLE SUITE whatever scope it is handed."
       echo "    recorded testCommand: ${cmd}"
-      echo "    measured: ${NARROW_SCOPED} test(s) with ONLY ${NARROW_FILE} in scope, ${NARROW_FULL} with the whole suite."
-      echo "    The project's own test script carries its own file selection, so a ticket's scope is"
+      echo "    measured: ${NARROW_SCOPED} test(s) with ONLY ${NARROW_FILE} in scope, ${NARROW_FULL} with the whole"
+      echo "    suite${NARROW_EMPTY:+, and ${NARROW_EMPTY} with the scope pointed at an EMPTY directory} — every scope only ever ADDS to what it already runs."
+      echo "    The command's own file selection stands whatever it is handed, so a ticket's scope is"
       echo "    APPENDED to it rather than APPLIED. Every Implement proof leg would run this repo's"
       echo "    whole suite (${NARROW_FULL} tests) whatever the ticket declared, and the proof gate's"
       echo "    narrowing control REFUSES such a leg rather than pass it."
       echo "    THE CURE — the scope must REPLACE the runner's own selection, not sit after it:"
-      # `--test-command` RECORDS but does not probe (it runs nothing today), so
-      # the second verb is part of the instruction rather than an optional
-      # extra: recording the cure is not the same as measuring that it worked.
       if [ -n "$NARROW_CURE" ]; then
         echo "        ${NARROW_CURE}"
         echo "    Record it with: lcars update --test-command '${NARROW_CURE}'"
-        echo "    then measure the cure:  lcars update --probe-tests"
+        echo "    which now probes what it records."
       else
-        echo "        <runner> … \"\${LCARS_TESTS_DIR:-<the selection the command already uses>}\""
+        # THE SECOND REFUSAL (fix round 1, DEFECT B). A command that ALREADY
+        # hands "$LCARS_TESTS_DIR" over has no selection left to replace, so
+        # the generic placeholder was no cure at all — it described what the
+        # command already does. The thing that ignores the scope is INSIDE what
+        # the command invokes, and that is what the readout now says. It does
+        # not NAME that thing: the first token is `npm` as often as it is the
+        # wrapper, and a wrong name is worse than a precise description.
+        case "$cmd" in
+          *LCARS_TESTS_DIR*)
+            echo "        this command ALREADY hands \"\${LCARS_TESTS_DIR}\" over, so the selection that ignores"
+            echo "        it is INSIDE what the command invokes — make that run ONLY the files it is given,"
+            echo "        or record a command that invokes the runner directly:"
+            echo "        <runner> … \"\${LCARS_TESTS_DIR:-<the selection it uses today>}\"" ;;
+          *)
+            echo "        <runner> … \"\${LCARS_TESTS_DIR:-<the selection the command already uses>}\"" ;;
+        esac
         echo "    Record it with: lcars update --test-command '<the corrected command>'"
-        echo "    then measure the cure:  lcars update --probe-tests"
+        echo "    which now probes what it records."
       fi ;;
     moot|inconclusive)
       # A QUIET NOTE, not an alarm (the same "·" voice lcars_seed_gate_timeout

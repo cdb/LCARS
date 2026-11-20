@@ -325,17 +325,31 @@ E4="$(jq_ff "$B4" 'd["executed"]["tip"]')"
   || bad "4c. verdict was '$(jq_ff "$B4" 'd["verdict"]')': $(jq_ff "$B4" 'd["reason"]' | head -c 250)"
 
 # ---------------------------------------------------------------------------
-# 5. A PLANTED OVER-WIDE CONTROL REDS — the known-fail control for row 4.
-#    Same repo, same leg, same real narrowing; only the recorded suite size is
-#    planted at 2, so the LEG's 2 is "the whole suite" too. If row 4's green
-#    came from the comparison never firing, this row would be green as well.
+# 5. KNOWN-FAIL CONTROL — A STALE-LOW RECORDED SIZE DOES NOT RESCUE THE BROKEN
+#    SHAPE. Same broken command as row 3, same control-8 / leg-18 measurement;
+#    only the RECORDED size is planted stale-low at 2, the number a probe would
+#    have written before this repo's suite grew. The comparison must still fire,
+#    because the CONTROL is itself a fresh measurement of the whole suite and
+#    both numbers still sit at or above it. If row 4's green came from the
+#    comparison never firing at all, this row would be green as well.
+#
+#    FIX ROUND 1 — THIS ROW WAS REWRITTEN, and the one it replaced asserted the
+#    OPPOSITE of what the round's DEFECT C requires (see section 9). It planted
+#    suiteSize=2 on the HONEST row-4 fixture — control 10, leg 2 — and demanded
+#    `unproven`. That is precisely the shape measured on 20 Nov 2026 as a false
+#    park: an honest 2-of-10 narrowing refused because a number nothing
+#    refreshes had gone stale. The two cannot both hold — they are one case with
+#    different control values, and only a magnitude threshold could tell them
+#    apart — so the known-fail control moved to the BROKEN command, where the
+#    leg genuinely did run everything.
 # ---------------------------------------------------------------------------
-echo "-- 5. KNOWN-FAIL CONTROL: a planted over-wide control reds --"
+echo "-- 5. KNOWN-FAIL CONTROL: a stale-low recorded size still reds the broken shape --"
 B5="$(mkbase --files 8 --sleep 0 --tip flat2)"
+cfg_put "$B5" testCommand "$(printf '%s' "$BROKEN_CMD" | "${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
 cfg_put "$B5" suiteSize 2
 ff "$B5" LCARS_GATE_TIMEOUT=60
 [ "$(jq_ff "$B5" 'd["scopeControl"]["narrowing"]')" = unproven ] \
-  && ok "5a. the planted over-wide control is UNPROVEN (the comparison is live)" \
+  && ok "5a. the stale-low recorded size still reds the broken shape (the comparison is live)" \
   || bad "5a. narrowing was '$(jq_ff "$B5" 'd["scopeControl"]["narrowing"]')' — the comparison never fired"
 [ "$(jq_ff "$B5" 'd["verdict"]')" = inconclusive ] \
   && ok "5b. and the leg is INCONCLUSIVE" \
@@ -379,6 +393,309 @@ ff "$B9" LCARS_GATE_TIMEOUT=60
 [ "$(jq_ff "$B9" 'd["verdict"]')" = pass ] \
   && ok "6f. and a repo whose WHOLE suite is the ticket's one declared file still passes" \
   || bad "6f. the guard parked the moot one-file shape: $(jq_ff "$B9" 'd["reason"]' | head -c 250)"
+
+# ===========================================================================
+# PART THREE — FIX ROUND 1: THE CURES MUST NOT FIRE ON HEALTHY REPOS
+# ===========================================================================
+# A fresh tester sent round 0 back. Both cures worked on the capstone shape and
+# BOTH NOW FIRE ON HEALTHY REPOS: `init` refused a command that genuinely
+# narrows, and the gate parked honest work against a TRUTHFUL recorded size. A
+# false refusal at setup, and honest work parked, are worse than the bug being
+# cured. These sections pin the cures' own known-good controls.
+
+# mkjs2 — the DEFECT A SHAPE. Identical to mkjs except the suite is SPLIT: the
+# project's `test` script runs tests/unit (the default suite, 2 cases in 2
+# files) and tests/e2e/smoke.test.js holds 3 one-line cases and is THE SMALLEST
+# TRACKED TEST FILE BY BYTES — so the old probe measured the command with a
+# file the default run never executes. The e2e file runs MORE tests than the
+# whole default suite, and `scoped >= full` read that as "the scope excluded
+# nothing". This is an ORDINARY repo shape (an e2e dir the unit script does not
+# run; an examples dir; a second package's tests), easiest to hit on a young
+# repo with a small default suite — exactly what the capstone will use.
+mkjs2() { # name test-script [--no-e2e] → repo path
+  local name="$1" script="$2" extra="${3:-}" repo
+  repo="$TMPROOT/$name"
+  mkdir -p "$repo/tests/unit" "$repo/tests/e2e" "$repo/src"
+  ( cd "$repo" && git init -q -b main && git config user.email t@t && git config user.name t )
+  "${LCARS_PYTHON_BIN:-python3}" - "$repo/package.json" "$script" <<'PY'
+import json, sys
+json.dump({"name": "probe-fixture", "private": True, "scripts": {"test": sys.argv[2]}},
+          open(sys.argv[1], "w"), indent=2)
+PY
+  printf 'exports.add = (a, b) => a + b;\n' >"$repo/src/calc.js"
+  local f
+  for f in alpha beta; do
+    cat >"$repo/tests/unit/$f.test.js" <<JS
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { add } = require('../../src/calc.js');
+test('$f adds', () => { assert.strictEqual(add(2, 2), 4); });
+JS
+  done
+  cat >"$repo/tests/e2e/smoke.test.js" <<'JS'
+const { test } = require('node:test');
+test('a', () => {}); test('b', () => {}); test('c', () => {});
+JS
+  [ "$extra" = --no-e2e ] && rm -rf "$repo/tests/e2e"
+  ( cd "$repo" && git add -A && git commit -qm "probe fixture ($name)" )
+  printf '%s' "$repo"
+}
+smallest_test_file() { # repo → the smallest tracked test file by bytes
+  ( cd "$1" && git ls-files | grep -E '\.test\.js$' \
+    | while IFS= read -r p; do printf '%s %s\n' "$(wc -c <"$p" | tr -d ' ')" "$p"; done \
+    | sort -n | head -1 | sed 's/^[0-9]* //' )
+}
+
+# ---------------------------------------------------------------------------
+# 7. DEFECT A — THE CORRECT FORM IS ACCEPTED EVEN WHEN THE SMALLEST TRACKED
+#    TEST FILE IS OUTSIDE THE COMMAND'S OWN SELECTION.
+# ---------------------------------------------------------------------------
+echo "-- 7. DEFECT A: a command that genuinely narrows is ACCEPTED --"
+R7="$(mkjs2 defecta 'node --test --test-concurrency=1 "${LCARS_TESTS_DIR:-tests/unit}"')"
+S7="$(smallest_test_file "$R7")"
+[ "$S7" = tests/e2e/smoke.test.js ] \
+  && ok "7a. CONTROL: the smallest tracked test file IS the out-of-selection one ($S7)" \
+  || bad "7a. the fixture's smallest tracked test file is '$S7' — the defect's trigger is not present"
+run_init "$R7"
+case "$INITOUT" in
+  *"CANNOT NARROW"*) bad "7b. init REFUSED the CORRECT form over an unrelated e2e file: $(printf '%s' "$INITOUT" | tail -12 | tr '\n' '|')" ;;
+  *) ok "7b. init does NOT refuse it" ;;
+esac
+case "$INITOUT" in
+  *'TEST SYSTEMS ONLINE'*) ok "7c. and TEST SYSTEMS ONLINE is certified" ;;
+  *) bad "7c. the certification was withheld from a healthy repo: $(printf '%s' "$INITOUT" | tail -12 | tr '\n' '|')" ;;
+esac
+[ "$(cfg_get "$R7" suiteSize)" = 2 ] \
+  && ok "7d. with the DEFAULT suite's size recorded (suiteSize=2, not the e2e file's 3)" \
+  || bad "7d. suiteSize was '$(cfg_get "$R7" suiteSize)' (expected the measured 2)"
+# THE TESTER'S KNOWN-GOOD CONTROL: the only difference between the refused repo
+# and the accepted one was an unrelated e2e file. Delete it and the IDENTICAL
+# command was already certified — so that row must stay green too.
+R7B="$(mkjs2 defecta-control 'node --test --test-concurrency=1 "${LCARS_TESTS_DIR:-tests/unit}"' --no-e2e)"
+run_init "$R7B"
+case "$INITOUT" in
+  *"CANNOT NARROW"*) bad "7e. KNOWN-GOOD CONTROL regressed — the same command with no e2e dir is now refused" ;;
+  *) ok "7e. KNOWN-GOOD CONTROL: the identical command with tests/e2e deleted is still accepted" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 8. KNOWN-FAIL CONTROLS — a command that genuinely cannot narrow is STILL
+#    refused. Both of the tester's: a FIXED GLOB, and a WRAPPER SCRIPT that
+#    ignores its arguments entirely. If section 7's acceptance came from the
+#    probe going quiet, these two would be accepted as well.
+# ---------------------------------------------------------------------------
+echo "-- 8. KNOWN-FAIL CONTROLS: a command that cannot narrow is still REFUSED --"
+R8A="$(mkjs2 fixedglob-split 'node --test --test-concurrency=1 "tests/unit"')"
+run_init "$R8A"
+case "$INITOUT" in
+  *"CANNOT NARROW"*) ok "8a. a FIXED SELECTION is still refused, with the same e2e file present" ;;
+  *) bad "8a. the fixed-selection command was accepted: $(printf '%s' "$INITOUT" | tail -14 | tr '\n' '|')" ;;
+esac
+case "$INITOUT" in
+  *'TEST SYSTEMS ONLINE'*) bad "8b. it still certified TEST SYSTEMS ONLINE" ;;
+  *) ok "8b. and TEST SYSTEMS ONLINE is withheld" ;;
+esac
+# A WRAPPER SCRIPT THAT IGNORES ITS ARGUMENTS ENTIRELY: nothing in the recorded
+# command's text, and nothing about its own selection, says so — only a live run
+# can tell, which is this probe's whole reason to exist.
+R8B="$(mkjs2 wrapper 'bash run-tests.sh')"
+cat >"$R8B/run-tests.sh" <<'SH'
+#!/usr/bin/env bash
+# Ignores every argument it is handed, on purpose.
+exec node --test --test-concurrency=1 tests/unit
+SH
+chmod +x "$R8B/run-tests.sh"
+( cd "$R8B" && git add -A && git commit -qm "wrapper that ignores its arguments" )
+run_init "$R8B"
+case "$INITOUT" in
+  *"CANNOT NARROW"*) ok "8c. a WRAPPER that ignores its arguments is refused" ;;
+  *) bad "8c. the argument-ignoring wrapper was accepted: $(printf '%s' "$INITOUT" | tail -14 | tr '\n' '|')" ;;
+esac
+case "$INITOUT" in
+  *'TEST SYSTEMS ONLINE'*) bad "8d. the wrapper still certified TEST SYSTEMS ONLINE" ;;
+  *) ok "8d. and TEST SYSTEMS ONLINE is withheld from it too" ;;
+esac
+# THE COSMETIC TELL (Defect B): a cure printed for a repo whose script is
+# ALREADY right double-wrapped the variable. It expanded correctly, but it is
+# the signature of the cure path firing where nothing is wrong.
+case "$INITOUT$(printf '%s' "$INITOUT")" in
+  *'LCARS_TESTS_DIR:-${LCARS_TESTS_DIR'*) bad "8e. the printed cure double-wraps \${LCARS_TESTS_DIR}" ;;
+  *) ok "8e. no printed cure double-wraps \${LCARS_TESTS_DIR}" ;;
+esac
+# AND THE CURE BUILDER ITSELF, on the three shapes it is handed. A script that
+# already applies the scope has NO selection to replace, so it must produce no
+# cure at all — wrapping it again was the double wrap. A command the captain
+# recorded himself (no `npm test` wrapper, the SECOND-refusal source) must
+# still produce a concrete one.
+cure_of() { # repo cmd → the cure, or empty
+  bash -c '. "$1/skills/lcars-init/lcars-common.sh"; TOPLEVEL="$2"; lcars_narrowing_cure "$3"' \
+    _ "$REPO_ROOT" "$1" "$2" 2>/dev/null
+}
+[ -z "$(cure_of "$R7" 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}')" ] \
+  && ok "8f. a script that ALREADY applies the scope is offered no cure (no double wrap)" \
+  || bad "8f. it offered a cure for a script that is already right: [$(cure_of "$R7" 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}')]"
+case "$(cure_of "$R8A" 'node --test --test-concurrency=1 "tests/unit"')" in
+  *'"${LCARS_TESTS_DIR:-tests/unit}"'*) ok "8g. a command recorded by hand still gets a CONCRETE cure (the second refusal)" ;;
+  *) bad "8g. no concrete cure for a hand-recorded command: [$(cure_of "$R8A" 'node --test --test-concurrency=1 "tests/unit"')]" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 9. DEFECT C — THE GATE MUST NOT PARK HONEST WORK AGAINST A TRUTHFUL SIZE.
+#    MEASURED, 20 Nov 2026: with `suiteSize` set to exactly what a probe would
+#    have recorded (2) the empty-scope control ran 4, the leg ran 2 — an honest
+#    2x narrowing — and the leg came back INCONCLUSIVE. Because the control
+#    nearly always runs the WHOLE CURRENT suite, the "both numbers" rule
+#    collapsed to a single test of the leg against a number NOTHING REFRESHES,
+#    so stale-low is the permanent steady state of a growing repo.
+#
+#    THE RULE: effective suite = max(recorded suiteSize, the control's count).
+#    The control IS a fresh measurement of the whole suite whenever the runner
+#    ignores an empty scope, so when it exceeds the record it is the better
+#    number. 9a–9d measure the rule itself on the four known shapes, with the
+#    capstone's own figures, straight out of run.sh's source.
+# ---------------------------------------------------------------------------
+echo "-- 9. DEFECT C: the rule, on the four known shapes --"
+# The two functions are lifted from run.sh's REAL source text and evaluated
+# here: the whole script cannot be sourced (it dispatches), and a re-typed copy
+# would prove nothing about the code that ships.
+eval "$(sed -n '/^proof_effective_suite()/,/^}/p' "$RUN_SH")" 2>/dev/null
+eval "$(sed -n '/^proof_ran_whole_suite()/,/^}/p' "$RUN_SH")" 2>/dev/null
+rule() { # recorded control leg → unproven | proven
+  local eff
+  if ! declare -f proof_effective_suite >/dev/null 2>&1; then printf 'MISSING'; return 0; fi
+  eff="$(proof_effective_suite "$1" "$2")"
+  if [ -n "$eff" ] && proof_ran_whole_suite "$2" "$eff" && proof_ran_whole_suite "$3" "$eff"
+  then printf 'unproven'; else printf 'proven'; fi
+}
+[ "$(rule 7381 7393 7400)" = unproven ] \
+  && ok "9a. the capstone shape (7381 / 7393 / 7400) is UNPROVEN" \
+  || bad "9a. the capstone shape read '$(rule 7381 7393 7400)' (expected unproven)"
+[ "$(rule 7381 0 53)" = proven ] \
+  && ok "9b. a genuinely narrowed leg (7381 / 0 / 53) is PROVEN" \
+  || bad "9b. the narrowed leg read '$(rule 7381 0 53)' (expected proven)"
+[ "$(rule 2 4 2)" = proven ] \
+  && ok "9c. DEFECT C (2 / 4 / 2) is PROVEN — an honest 2x narrowing is not parked" \
+  || bad "9c. Defect C read '$(rule 2 4 2)' (expected proven)"
+[ "$(rule 2 22 2)" = proven ] \
+  && ok "9d. DEFECT C with the suite grown 10x (2 / 22 / 2) is PROVEN" \
+  || bad "9d. the grown shape read '$(rule 2 22 2)' (expected proven)"
+# AND THE SAME FOUR, END TO END, through the real gate on the real fixture.
+echo "-- 9. DEFECT C: and end to end, through the real gate --"
+B9C="$(mkbase --files 2 --sleep 0 --tip flat2)"
+cfg_put "$B9C" suiteSize 2
+ff "$B9C" LCARS_GATE_TIMEOUT=60
+C9C="$(jq_ff "$B9C" 'd["scopeControl"]["executed"]')"
+E9C="$(jq_ff "$B9C" 'd["executed"]["tip"]')"
+[ "$C9C" = 4 ] && [ "$E9C" = 2 ] \
+  && ok "9e. CONTROL: the fixture reproduces the measured shape (suiteSize 2, control 4, leg 2)" \
+  || bad "9e. the fixture gave control='$C9C' leg='$E9C' (expected 4 / 2); nothing below proves anything"
+[ "$(jq_ff "$B9C" 'd["verdict"]')" = pass ] \
+  && ok "9f. the honest 2x-narrowed ticket PASSES against a truthful suiteSize" \
+  || bad "9f. verdict was '$(jq_ff "$B9C" 'd["verdict"]')': $(jq_ff "$B9C" 'd["reason"]' | head -c 250)"
+B9D="$(mkbase --files 20 --sleep 0 --tip flat2)"
+cfg_put "$B9D" suiteSize 2
+ff "$B9D" LCARS_GATE_TIMEOUT=120
+C9D="$(jq_ff "$B9D" 'd["scopeControl"]["executed"]')"
+[ "$C9D" = 22 ] \
+  && ok "9g. CONTROL: the suite has grown 10x under a stale suiteSize of 2 (control 22)" \
+  || bad "9g. the grown fixture's control was '$C9D' (expected 22)"
+[ "$(jq_ff "$B9D" 'd["verdict"]')" = pass ] \
+  && ok "9h. and the honest 2-test leg still PASSES — stale-low no longer parks it" \
+  || bad "9h. verdict was '$(jq_ff "$B9D" 'd["verdict"]')': $(jq_ff "$B9D" 'd["reason"]' | head -c 250)"
+
+# ---------------------------------------------------------------------------
+# 10. DEFECT B — THE DOOR THE REFUSAL PRESCRIBES IS GUARDED.
+#     `lcars update --test-command '<cmd>'` is the one verb a narrowing refusal
+#     tells the captain to use, and it RECORDED AND CERTIFIED with no narrowing
+#     probe at all. So following the printed cure could not clear a refusal, and
+#     a command that cannot narrow could be recorded through it unmeasured.
+# ---------------------------------------------------------------------------
+echo "-- 10. DEFECT B: --test-command probes what it records --"
+UPDATE_SH="${LCARS_UPDATE_SCRIPT:-$REPO_ROOT/skills/lcars-update/update.sh}"
+run_update() { # repo args… → UPDOUT / UPDRC
+  local repo="$1"; shift
+  if [ -z "$repo" ] || [ ! -e "$repo/.git/lcars" ]; then
+    UPDOUT="FIXTURE MISSING: '$repo' is not an initialized repo"; UPDRC=99; return 0
+  fi
+  UPDRC=0
+  UPDOUT="$( cd "$repo" && LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" \
+      LCARS_VERSION_CHECK=0 LCARS_PROBE_TIMEOUT=120 \
+      bash "$UPDATE_SH" "$@" 2>&1 )" || UPDRC=$?
+}
+# Start from the ALREADY-REFUSED repo of row 8a, the real situation: the captain
+# reads the refusal and types the verb it printed.
+run_update "$R8A" --test-command 'node --test --test-concurrency=1 "tests/unit"'
+case "$UPDOUT" in
+  *"CANNOT NARROW"*) ok "10a. a NON-NARROWING command handed to --test-command is refused" ;;
+  *) bad "10a. --test-command recorded it unmeasured: $(printf '%s' "$UPDOUT" | tail -12 | tr '\n' '|')" ;;
+esac
+case "$UPDOUT" in
+  *'TEST SYSTEMS ONLINE'*) bad "10b. and it still printed TEST SYSTEMS ONLINE" ;;
+  *) ok "10b. and TEST SYSTEMS ONLINE is withheld" ;;
+esac
+case "$UPDOUT" in
+  *'LCARS_TESTS_DIR:-${LCARS_TESTS_DIR'*) bad "10c. the second refusal double-wraps \${LCARS_TESTS_DIR}" ;;
+  *) ok "10c. with no double-wrapped \${LCARS_TESTS_DIR} in its cure" ;;
+esac
+case "$UPDOUT" in
+  *'${LCARS_TESTS_DIR'*) ok "10d. and a CONCRETE cure, not a bare placeholder" ;;
+  *) bad "10d. the second refusal named no cure at all: $(printf '%s' "$UPDOUT" | tail -12 | tr '\n' '|')" ;;
+esac
+# FOLLOWING THE PRINTED CURE CLEARS THE REFUSAL — the end-to-end scenario the
+# tester could not complete.
+run_update "$R8A" --test-command 'node --test --test-concurrency=1 "${LCARS_TESTS_DIR:-tests/unit}"'
+case "$UPDOUT" in
+  *"CANNOT NARROW"*) bad "10e. following the cure through --test-command STILL refuses: $(printf '%s' "$UPDOUT" | tail -12 | tr '\n' '|')" ;;
+  *) ok "10e. following the printed cure through --test-command clears the refusal" ;;
+esac
+case "$UPDOUT" in
+  *'TEST SYSTEMS ONLINE'*) ok "10f. and the cured repo is certified TEST SYSTEMS ONLINE" ;;
+  *) bad "10f. the cured repo never got its certification: $(printf '%s' "$UPDOUT" | tail -12 | tr '\n' '|')" ;;
+esac
+[ "$UPDRC" -eq 0 ] \
+  && ok "10g. exiting zero" \
+  || bad "10g. the cured --test-command exited $UPDRC"
+# KNOWN-GOOD CONTROL: the verb stays usable for a command with nothing to
+# measure. `echo` resolves, prints no test count, and must neither be refused
+# nor lose its verdict line.
+run_update "$R7B" --test-command 'echo my-suite'
+case "$UPDOUT" in
+  *"CANNOT NARROW"*) bad "10h. --test-command refused a command it could not measure" ;;
+  *) ok "10h. KNOWN-GOOD CONTROL: an unmeasurable command is not refused" ;;
+esac
+case "$UPDOUT" in
+  *'TEST SYSTEMS ONLINE'*) ok "10i. and still prints its verdict line" ;;
+  *) bad "10i. the verdict line went missing: $(printf '%s' "$UPDOUT" | tail -8 | tr '\n' '|')" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# 11. KNOWN-GOOD CONTROL — A SINGLE-FILE REPO IS "NOT MEASURED", NOT REFUSED.
+#     The product already had this honest outcome; the cures must keep it.
+# ---------------------------------------------------------------------------
+echo "-- 11. KNOWN-GOOD CONTROL: a single-file repo stays 'not measured' --"
+R11="$TMPROOT/onefile"
+mkdir -p "$R11/tests"
+( cd "$R11" && git init -q -b main && git config user.email t@t && git config user.name t )
+"${LCARS_PYTHON_BIN:-python3}" - "$R11/package.json" 'node --test --test-concurrency=1 "${LCARS_TESTS_DIR:-tests}"' <<'PY'
+import json, sys
+json.dump({"name": "one", "private": True, "scripts": {"test": sys.argv[2]}},
+          open(sys.argv[1], "w"), indent=2)
+PY
+cat >"$R11/tests/only.test.js" <<'JS'
+const { test } = require('node:test');
+test('one', () => {});
+JS
+( cd "$R11" && git add -A && git commit -qm "one test file" )
+run_init "$R11"
+case "$INITOUT" in
+  *"CANNOT NARROW"*) bad "11a. a one-file repo was REFUSED" ;;
+  *'narrowing not measured'*) ok "11a. a one-file repo reports 'narrowing not measured'" ;;
+  *) bad "11a. neither refused nor reported as not measured: $(printf '%s' "$INITOUT" | tail -10 | tr '\n' '|')" ;;
+esac
+case "$INITOUT" in
+  *'TEST SYSTEMS ONLINE'*) ok "11b. and keeps TEST SYSTEMS ONLINE" ;;
+  *) bad "11b. the one-file repo lost its certification" ;;
+esac
 
 # ===========================================================================
 echo

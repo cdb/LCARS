@@ -512,6 +512,35 @@ if [ -n "$VERB" ]; then
       [ -n "$CMD" ] || die "an empty test command powers nothing — give the exact command that runs this repo's suite, e.g. lcars update --test-command 'npm test'."
       set_test_command "$CMD"
       echo "  ✓ testCommand set: $CMD"
+      # S364 fix round 1, DEFECT B — THE DOOR THE REFUSAL PRESCRIBES IS NOW
+      # GUARDED. This verb RECORDED and printed `TEST SYSTEMS ONLINE` with no
+      # narrowing probe at all: measured 20 Nov 2026, it was the one door a
+      # narrowing refusal tells the captain to use and the one door the probe
+      # did not watch. So following the printed cure could not clear a refusal
+      # (nothing re-measured), and a command that cannot narrow could be
+      # recorded through it and certified.
+      #
+      # THE RECORD STILL STANDS WHATEVER THE PROBE SAYS — the captain's
+      # explicit order is honoured, exactly as it is for a runner that does not
+      # resolve. What a non-narrowing command does not get is the
+      # certification, and the refusal is printed with its cure.
+      #
+      # The probe runs only when the command's first token RESOLVES: spawning a
+      # binary that is not on this machine measures nothing, and the verdict
+      # line below already reports that case as OFFLINE.
+      lcars_test_readiness "$CONFIG"
+      if [ "$LCARS_TESTREADY_STATUS" = "ready" ]; then
+        echo "  ▸ probing test systems: $CMD"
+        run_probe "$CMD"
+        report_probe
+        lcars_check_narrowing "$CMD" "$CONFIG" \
+          || die "could not record suiteSize in .git/lcars/config.json."
+        if [ "${NARROW_OUTCOME:-}" = cannot-narrow ]; then
+          echo "    The command is RECORDED, but the Implement proof gates will refuse every leg"
+          echo "    until it narrows."
+          exit 1
+        fi
+      fi
       print_verdict
       exit 0
       ;;

@@ -830,8 +830,17 @@ around them (see vision.md → *Implement*):
   numbers are required, because an empty scope can degenerate into the runner's
   own discovery in a repo whose command narrows perfectly well — a control-only
   rule parks honest tickets. With no `suiteSize` recorded the comparison is
-  inert and the gate behaves exactly as it did; refresh a stale one with
-  `lcars update --probe-tests`.
+  inert and the gate behaves exactly as it did.
+
+  **And the record is never trusted over a fresher number.** The comparison is
+  made against the LARGER of the recorded `suiteSize` and the control's own
+  count, because in exactly the case it fires the control has just measured the
+  whole suite itself. Nothing refreshes `suiteSize` automatically, so a growing
+  repo's record is permanently stale-low: measured 20 Nov 2026, a suite grown to
+  22 tests with `suiteSize` still 2 turned an honest 2-test leg `inconclusive`.
+  Taking the larger of the two is a tightening of the RECORD and never of the
+  verdict — the effective size is never below the recorded one, so no leg that
+  passed before can start failing.
 
   **Zero executed is never evidence, on EITHER leg.** A run that exits green
   while its own runner reports executing zero tests is INCONCLUSIVE
