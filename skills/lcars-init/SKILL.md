@@ -69,6 +69,23 @@ unset, stating only the exceeded bound, not a measured suite duration or a
 passing verdict. Adjust it with `lcars update --gate-timeout <seconds>`
 (1–3600), then re-probe with a suitable `LCARS_PROBE_TIMEOUT`.
 
+A passing suite is not yet a usable proof instrument, so a passing probe is
+followed by a **narrowing probe**: the recorded command is run once more with a
+single tracked test file in `$LCARS_TESTS_DIR`, and the executed counts are
+compared against the whole suite's. A command that narrows runs fewer tests;
+one that cannot runs at least the whole suite either way, because the project's
+own test script already selects everything and the per-ticket scope is appended
+rather than applied. That command is **refused by name at setup** — `TEST
+SYSTEMS CANNOT NARROW`, with both measured counts, the consequence, and the
+corrected form (the scope REPLACING the selection, e.g.
+`node --test "${LCARS_TESTS_DIR:-tests/**/*.test.js}"`) plus the
+`lcars update --test-command` line that records it. `TEST SYSTEMS ONLINE` is
+withheld, but setup itself still completes: config and labels are done and
+correct. The measured full-suite size is recorded as `suiteSize`, which the
+Implement proof gate's narrowing control reads. A repo whose runner can only be
+handed a directory (`unittest discover -s`), or that tracks fewer than two test
+files, is reported as not measured rather than refused.
+
 Python detection reuses an existing interpreter from the shared git directory's
 `lcars/testenv`, `.venv`, or `venv`, in that order, before falling back to
 `python3`/`pytest`. It records an absolute interpreter path so isolated gate

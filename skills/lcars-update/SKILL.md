@@ -72,6 +72,17 @@ The proof gate also accepts valid JSON whitespace around `gateTimeout`'s
 colon (including separate key, colon, and value lines) and JSON-escaped
 spellings of that key, such as `"gate\u0054imeout"`.
 
+`suiteSize` is the number of tests the repo's whole suite executed the last
+time a probe ran it. Unlike `gateTimeout` it is a **measurement, not a
+setting**, so every probe path replaces it — its only job is to be current.
+The Implement proof gate's narrowing control reads it: a control run and a
+proof leg that both execute at or above that number excluded nothing, however
+far apart the two numbers are. Every path that records a `testCommand`
+(`--probe-tests`, `--test-command`, `--fix-tests`) also runs the **narrowing
+probe**, which re-runs the command with a single tracked test file in
+`$LCARS_TESTS_DIR` and reports — by name, with both counts and the corrected
+form — a command that runs the whole suite whatever scope it is handed.
+
 Settings writers parse complete JSON values, including multiline objects,
 and validate read-back before atomically replacing the file. Invalid JSON
 is an explicit failure and leaves the original settings untouched.

@@ -782,7 +782,29 @@ if [ "${LCARS_TESTREADY_STATUS:-}" = "ready" ] && [ -z "${LCARS_INIT_SKIP_PROBE:
   fi
   report_probe
   case "$PROBE_OUTCOME" in
-    pass) echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD"
+    pass)
+          # S364 — A PASSING SUITE IS NOT YET A USABLE PROOF INSTRUMENT. The
+          # command also has to be able to NARROW: the Implement proof gates
+          # hand it ONE ticket's test file(s) in $LCARS_TESTS_DIR, and a command
+          # that APPENDS that scope to its own fixed selection runs the whole
+          # repository on every leg. Measured on the capstone of 18 Nov 2026:
+          # 7,400 tests where 53 were declared, ~6 minutes a leg, one ticket
+          # consuming 114 minutes and all three of its sessions — and the
+          # flip-flop's parent half silently disabled while its rejection power
+          # stayed live. Nothing in the command's TEXT says which it is, so it
+          # is MEASURED here, once, at setup. See lcars_probe_narrowing.
+          lcars_check_narrowing "$LCARS_TESTREADY_TESTCMD" "$CONFIG" \
+            || die "could not record suiteSize in .git/lcars/config.json."
+          if [ "${NARROW_OUTCOME:-}" = cannot-narrow ]; then
+            # The certification is WITHHELD, not softened: a command that cannot
+            # narrow cannot prove a ticket, so "TEST SYSTEMS ONLINE" would be
+            # false. Setup itself still stands (config, labels) — the refusal is
+            # a report, never a stop.
+            echo "    Missions can be filed, but the Implement proof gates will refuse every leg"
+            echo "    until this command narrows."
+          else
+            echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD"
+          fi
           # S308: the probe just TIMED this repo's whole suite. If it is slower
           # than the proof-gate timeout, record that here rather than leave every
           # Implement leg to be killed mid-run and recorded INCONCLUSIVE.

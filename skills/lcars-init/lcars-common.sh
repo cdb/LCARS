@@ -3636,6 +3636,323 @@ report_probe() {
 }
 
 # ---------------------------------------------------------------------------
+# S364 — A RECORDED TEST COMMAND MUST BE ABLE TO NARROW
+# ---------------------------------------------------------------------------
+# THE DEFECT, measured on the live capstone of 18 Nov 2026. `detect_test_cmd`
+# records a command by WRAPPING the project's own script:
+#
+#     npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}
+#
+# When that script carries its OWN fixed file selection
+# (`node --test "tests/**/*.test.js"`), the per-ticket scope is APPENDED, not
+# APPLIED. Measured: a ticket declaring 53 tests ran 7,400 — the whole
+# repository — at ~6 minutes a leg, and one ticket consumed 114 minutes and all
+# three of its sessions. It also disabled the flip-flop's first half while
+# leaving its rejection power intact (`parentLeg.ran=false`, `parent.rc=null`,
+# and the ticket bounced anyway): a gate that can fail work but cannot honestly
+# pass it is worse than a slow gate.
+#
+# THE CURE IS A PROBE, NOT A GUESS. Nothing about the recorded command's TEXT
+# says whether it narrows — `npm test -- <scope>` is the same string for a
+# project script that consumes the scope and one that ignores it. So the command
+# is RUN with two different scopes and the counts compared:
+#
+#   scope 1   none at all          → the WHOLE SUITE (run_probe already did it;
+#                                     its output file is reused, not re-run)
+#   scope 2   ONE tracked test file → what the scope actually selects
+#
+# A command that narrows executes FEWER tests with one file in scope than it
+# does with the whole suite in scope. A command that cannot narrow executes AT
+# LEAST the whole suite either way — the capstone's 7,381 vs 7,382. The verdict
+# is the SIGN of the difference, not its magnitude: a threshold ("they must
+# differ by thousands") mis-grades a small suite, where one file of three is a
+# perfectly good narrowing. Reported AT SETUP, by name, with the correct form —
+# not discovered at the first bounced ticket.
+#
+# IT NEVER BLOCKS SETUP. init's other side effects (config, labels) are done
+# and correct, and a command that cannot narrow is a normal thing to find in a
+# repo nobody has pointed at LCARS before. What it does not get is the
+# certification: `TEST SYSTEMS ONLINE` is withheld, loudly, with the cure.
+NARROW_OUTCOME=""   # narrows | cannot-narrow | moot | inconclusive
+NARROW_FULL=""      # executed count with the WHOLE SUITE in scope
+NARROW_SCOPED=""    # executed count with ONE test file in scope
+NARROW_FILE=""      # the test file handed over as that scope (repo-relative)
+NARROW_WHY=""
+NARROW_CURE=""
+
+# lcars_probe_executed_count <runner-output> → "<runner> <executed>" | ""
+# EXECUTED, not COLLECTED: every arm sums the tests that actually RAN, so a
+# block disabled with `describe.skip` cannot inflate either number.
+#
+# IT DELIBERATELY MIRRORS `proof_executed_count` / `proof_executed_count_ext` in
+# skills/lcars-run/run.sh RATHER THAN CALLING THEM — run.sh SOURCES this file,
+# not the other way round, so the gate's reader is not in scope here and moving
+# it would be a refactor of the protected proof machinery. KEEP THE TWO IN STEP,
+# the same way the `zerotests` signature in run_probe above is kept in step with
+# the gate's. If they ever disagree, the gate's reader is the authority: it is
+# the one a verdict is read from.
+lcars_probe_executed_count() {
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+
+# node:test — `pass N` / `fail N` summary lines
+p = re.search(r"^[^\n]*?\bpass (\d+)\s*$", out, re.M)
+f = re.search(r"^[^\n]*?\bfail (\d+)\s*$", out, re.M)
+if p and f:
+    print("node %d" % (int(p.group(1)) + int(f.group(1)))); sys.exit(0)
+
+# vitest — ` Tests  1 failed | 2 passed (3)` / ` Tests  no tests`
+m = re.search(r"^\s*Tests\s+(.*)$", out, re.M)
+if m and re.search(r"\bno tests\b", m.group(1)):
+    print("vitest 0"); sys.exit(0)
+if m and re.search(r"\(\d+\)\s*$", m.group(1)):
+    ran = sum(int(v) for v, k in re.findall(r"(\d+) (passed|failed)", m.group(1)))
+    print("vitest %d" % ran); sys.exit(0)
+
+# jest — `Tests:  1 failed, 2 passed, 3 total`
+m = re.search(r"^\s*Tests:\s+(.*?\d+ total)", out, re.M)
+if m:
+    ran = sum(int(v) for v, k in re.findall(r"(\d+) (passed|failed)", m.group(1)))
+    print("jest %d" % ran); sys.exit(0)
+
+# pytest — `3 passed, 1 failed in 0.05s`. `error` is deliberately NOT summed.
+if re.search(r"=+ .*(passed|failed|error)", out):
+    ran = sum(int(v) for v in re.findall(r"(\d+) (?:passed|failed)\b", out))
+    print("pytest %d" % ran); sys.exit(0)
+
+# rspec — `3 examples, 0 failures, 3 pending`: examples counts pending too.
+m = re.search(r"(\d+) examples?, (\d+) failures?(?:, (\d+) pending)?", out)
+if m:
+    print("rspec %d" % (int(m.group(1)) - int(m.group(3) or 0))); sys.exit(0)
+
+# minitest — `3 runs, 0 assertions, 0 failures, 0 errors, 3 skips`
+m = re.search(r"(\d+) runs?, \d+ assertions?(?:.*?(\d+) skips?)?", out)
+if m:
+    print("minitest %d" % (int(m.group(1)) - int(m.group(2) or 0))); sys.exit(0)
+
+# dotnet VSTest — `Failed: 1, Passed: 2, Skipped: 0, Total: 3`
+mf = re.search(r"\bFailed:\s*(\d+)", out)
+mp = re.search(r"\bPassed:\s*(\d+)", out)
+if mf and mp:
+    print("vstest %d" % (int(mf.group(1)) + int(mp.group(1)))); sys.exit(0)
+
+# python unittest / nose — `Ran 3 tests in 0.001s` + `OK (skipped=1)`
+m = re.search(r"^Ran (\d+) tests? in ", out, re.M)
+if m and re.search(r"^(OK|FAILED|NO TESTS RAN)\b", out, re.M):
+    sk = re.search(r"^(?:OK|FAILED)\b[^\n]*?\bskipped=(\d+)", out, re.M)
+    print("unittest %d" % (int(m.group(1)) - int(sk.group(1) if sk else 0))); sys.exit(0)
+
+# TAP — a `1..N` plan line plus `ok` / `not ok` result lines (SKIP/TODO excluded)
+if re.search(r"^1\.\.\d+\s*$", out, re.M):
+    ran = 0
+    for ln in out.splitlines():
+        if re.match(r"^(not ok|ok)\b", ln) and not re.search(r"#\s*(SKIP|TODO)", ln, re.I):
+            ran += 1
+    print("tap %d" % ran); sys.exit(0)
+
+# A bare `2 passed, 0 failed` summary with no decoration.
+m = re.search(r"^[^\n]*?\b(\d+) passed,\s*(\d+) failed\b", out, re.M)
+if m:
+    print("bare %d" % (int(m.group(1)) + int(m.group(2)))); sys.exit(0)
+' 2>/dev/null
+}
+
+# lcars_probe_test_files — the repo's TRACKED test files, SMALLEST FIRST.
+# Smallest first on purpose: the scope has to be a file that holds some of the
+# suite and not all of it, and byte size is the cheapest honest proxy for "few
+# tests". Tracked only (`git ls-files`), so a stray editor backup or a
+# node_modules copy can never be chosen as the measuring instrument.
+lcars_probe_test_files() {
+  ( cd "$TOPLEVEL" 2>/dev/null || exit 0
+    "${LCARS_GIT_BIN:-git}" ls-files -z 2>/dev/null \
+      | tr '\0' '\n' \
+      | "${LCARS_PYTHON_BIN:-python3}" -c '
+import os, re, sys
+pat = re.compile(r"(^test_.+|.+[._-]test|.+[._-]spec|.+Tests?)\.[A-Za-z0-9]+$")
+rows = []
+for line in sys.stdin.read().splitlines():
+    if not line:
+        continue
+    if not pat.match(os.path.basename(line)):
+        continue
+    try:
+        st = os.stat(line)
+    except OSError:
+        continue
+    if not os.path.isfile(line):
+        continue
+    rows.append((st.st_size, line))
+for _, p in sorted(rows):
+    print(p)
+' 2>/dev/null )
+}
+
+# lcars_narrowing_cure <recorded-cmd> → the corrected command, or nothing.
+# Only the MEASURED shape is cured by example: LCARS wrapping the project's own
+# `npm test` script, whose own file selection the scope is appended to. The
+# correction is the form the captain's own SproutAndSpire already records —
+# `node --test … "${LCARS_TESTS_DIR:-tests/**/*.test.js}"` — the scope
+# REPLACING the selection, with the selection kept as its default so a plain
+# full-suite run is unchanged. Any other shape gets the RULE instead of an
+# example; a wrong example would be worse than none.
+lcars_narrowing_cure() {
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$TOPLEVEL/package.json" <<'PY' 2>/dev/null
+import json, shlex, sys
+cmd, pkg = sys.argv[1], sys.argv[2]
+if "npm test" not in cmd and "npm run test" not in cmd:
+    sys.exit(0)
+try:
+    script = json.load(open(pkg))["scripts"]["test"]
+    toks = shlex.split(script)
+except Exception:
+    sys.exit(0)
+for i, t in enumerate(toks):
+    if i == 0 or t.startswith("-"):
+        continue
+    if any(c in t for c in "*?") or "/" in t or t in ("test", "tests", "spec", "specs"):
+        toks[i] = '"${LCARS_TESTS_DIR:-%s}"' % t
+        print(" ".join(toks))
+        sys.exit(0)
+PY
+}
+
+# lcars_probe_narrowing <recorded-cmd> <whole-suite-output-file>
+# Sets NARROW_OUTCOME / NARROW_FULL / NARROW_SCOPED / NARROW_FILE / NARROW_WHY
+# / NARROW_CURE. Costs ONE bounded run: the whole-suite half is read back from
+# the output run_probe already captured.
+lcars_probe_narrowing() {
+  NARROW_OUTCOME=inconclusive; NARROW_FULL=""; NARROW_SCOPED=""; NARROW_FILE=""
+  NARROW_WHY=""; NARROW_CURE=""
+  local cmd="$1" out="${2:-}" full files n sout rc=0 scoped
+  [ -n "$cmd" ] || { NARROW_WHY="no test command was recorded"; return 0; }
+  full="$(lcars_probe_executed_count "$(cat "$out" 2>/dev/null)")"
+  full="${full##* }"
+  case "$full" in ''|*[!0-9]*)
+    NARROW_WHY="the whole-suite run printed no test count this probe can read, so the two scopes have no common number to be compared by"
+    return 0 ;;
+  esac
+  [ "$full" -gt 0 ] 2>/dev/null || {
+    NARROW_WHY="the whole-suite run executed no tests at all, so there is nothing a scope could narrow"
+    return 0; }
+  NARROW_FULL="$full"
+  # `unittest discover -s <dir>` can only be handed a DIRECTORY. Handing it a
+  # file is not a measurement of its narrowing, it is a measurement of the
+  # probe's own mistake, so the probe declines rather than invent a verdict.
+  case "$cmd" in
+    *unittest*discover*)
+      NARROW_OUTCOME=moot
+      NARROW_WHY="a \`unittest discover -s\` command can only be handed a DIRECTORY, so a single test file cannot be used as a scope and this probe cannot measure whether the command narrows"
+      return 0 ;;
+  esac
+  files="$(lcars_probe_test_files)"
+  n="$(printf '%s\n' "$files" | grep -c . | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -lt 2 ]; then
+    NARROW_OUTCOME=moot
+    NARROW_WHY="this repo tracks ${n} test file(s), so no scope could ever run less than its whole suite — there is no narrowing to measure (the same filesystem fact the proof gate records as 'moot')"
+    return 0
+  fi
+  NARROW_FILE="$(printf '%s\n' "$files" | grep . | head -1)"
+  sout="$(mktemp "${TMPDIR:-/tmp}/lcars-narrow.XXXXXX")" || return 0
+  ( cd "$TOPLEVEL" \
+    && LCARS_TESTS_DIR="$TOPLEVEL/$NARROW_FILE" \
+       perl -e 'alarm shift; exec @ARGV or exit 127' \
+       "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$sout" 2>&1
+  rc=$?
+  if [ "$rc" -eq 142 ]; then          # 128 + SIGALRM(14): the alarm fired
+    NARROW_WHY="the scoped run exceeded ${PROBE_TIMEOUT}s and was terminated, which says nothing either way about the narrowing"
+    rm -f "$sout"; return 0
+  fi
+  scoped="$(lcars_probe_executed_count "$(cat "$sout" 2>/dev/null)")"
+  scoped="${scoped##* }"
+  rm -f "$sout"
+  case "$scoped" in ''|*[!0-9]*)
+    NARROW_WHY="the run with ${NARROW_FILE} in scope printed no test count this probe can read (exit ${rc}), so there is nothing to compare against the whole suite's ${NARROW_FULL}"
+    return 0 ;;
+  esac
+  NARROW_SCOPED="$scoped"
+  if [ "$scoped" -eq 0 ]; then
+    # Zero with a REAL test file in scope is not a narrowing: a command that
+    # refuses the scope outright looks exactly the same. Never a pass.
+    NARROW_WHY="the run executed NO tests at all with a real test file (${NARROW_FILE}) in scope, which cannot be told apart from a command that rejects the scope outright"
+  elif [ "$scoped" -ge "$full" ] 2>/dev/null; then
+    NARROW_OUTCOME=cannot-narrow
+    NARROW_CURE="$(lcars_narrowing_cure "$cmd")"
+    NARROW_WHY="it executed ${scoped} test(s) with ONLY ${NARROW_FILE} in scope and ${full} with the whole suite in scope — the scope excluded nothing"
+  else
+    NARROW_OUTCOME=narrows
+    NARROW_WHY="it executed ${full} test(s) with the whole suite in scope and ${scoped} with ONLY ${NARROW_FILE} in scope — the scope genuinely selects"
+  fi
+  return 0
+}
+
+# lcars_report_narrowing <recorded-cmd> — the ship-status readout for the last
+# lcars_probe_narrowing. The refusal names the command, both measured numbers,
+# the consequence, and the corrected form; a verdict with no measurement behind
+# it is the thing this session exists to delete.
+lcars_report_narrowing() {
+  local cmd="${1:-}"
+  case "$NARROW_OUTCOME" in
+    narrows)
+      echo "  ✓ NARROWING VERIFIED — the recorded command obeys a per-ticket scope:"
+      echo "    ${NARROW_FULL} test(s) with the whole suite in scope, ${NARROW_SCOPED} with only ${NARROW_FILE}." ;;
+    cannot-narrow)
+      echo "  ✗ TEST SYSTEMS CANNOT NARROW — this command runs the WHOLE SUITE whatever scope it is handed."
+      echo "    recorded testCommand: ${cmd}"
+      echo "    measured: ${NARROW_SCOPED} test(s) with ONLY ${NARROW_FILE} in scope, ${NARROW_FULL} with the whole suite."
+      echo "    The project's own test script carries its own file selection, so a ticket's scope is"
+      echo "    APPENDED to it rather than APPLIED. Every Implement proof leg would run this repo's"
+      echo "    whole suite (${NARROW_FULL} tests) whatever the ticket declared, and the proof gate's"
+      echo "    narrowing control REFUSES such a leg rather than pass it."
+      echo "    THE CURE — the scope must REPLACE the runner's own selection, not sit after it:"
+      # `--test-command` RECORDS but does not probe (it runs nothing today), so
+      # the second verb is part of the instruction rather than an optional
+      # extra: recording the cure is not the same as measuring that it worked.
+      if [ -n "$NARROW_CURE" ]; then
+        echo "        ${NARROW_CURE}"
+        echo "    Record it with: lcars update --test-command '${NARROW_CURE}'"
+        echo "    then measure the cure:  lcars update --probe-tests"
+      else
+        echo "        <runner> … \"\${LCARS_TESTS_DIR:-<the selection the command already uses>}\""
+        echo "    Record it with: lcars update --test-command '<the corrected command>'"
+        echo "    then measure the cure:  lcars update --probe-tests"
+      fi ;;
+    moot|inconclusive)
+      # A QUIET NOTE, not an alarm (the same "·" voice lcars_seed_gate_timeout
+      # uses). "Not measured" is a fact about the probe, not a defect in the
+      # repo, and most of the repos that land here — a shell runner printing no
+      # counts, a suite in one file — have nothing the captain could act on.
+      echo "  · narrowing not measured — ${NARROW_WHY}." ;;
+  esac
+}
+
+# lcars_seed_suite_size <config> <count> — record the FULL-SUITE SIZE the probe
+# just measured. It is a MEASUREMENT, not a setting, so unlike `gateTimeout` a
+# fresh probe always replaces it: the number's whole job is to be current.
+# `skills/lcars-run/run.sh` reads it (proof_suite_size) as the one comparison
+# the narrowing control was missing — without it that control is inert, which
+# is why every probe path records it.
+lcars_seed_suite_size() { # config count
+  local config="$1" n="${2:-}"
+  [ -f "$config" ] || return 0
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$n" -gt 0 ] 2>/dev/null || return 0
+  lcars_config_set_or_add_raw "$config" suiteSize "$n" || return 1
+  return 0
+}
+
+# The whole DEFECT-A check as one call, so init and every `lcars update` probe
+# path ask the same question in the same words and cannot drift.
+lcars_check_narrowing() { # cmd config → NARROW_* set, suiteSize recorded, reported
+  [ "${PROBE_OUTCOME:-}" = pass ] || return 0
+  lcars_probe_narrowing "$1" "$PROBE_OUT"
+  lcars_seed_suite_size "$2" "$NARROW_FULL" || return 1
+  lcars_report_narrowing "$1"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # S308: SEED THE GATE TIMEOUT THE PROBE JUST MEASURED
 # ---------------------------------------------------------------------------
 # Passes supply measured wall-clock; timeouts supply only the exceeded bound.

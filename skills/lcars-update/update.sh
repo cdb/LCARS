@@ -522,6 +522,12 @@ if [ -n "$VERB" ]; then
       echo "  ▸ probing test systems: $TC"
       run_probe "$TC"
       report_probe
+      # S364: a passing suite is not yet a usable proof instrument — the command
+      # also has to be able to NARROW to one ticket's test file(s). Measured and
+      # reported here (and the full-suite size recorded for the proof gate's
+      # narrowing control) rather than discovered at the first bounced ticket.
+      lcars_check_narrowing "$TC" "$CONFIG" \
+        || die "could not record suiteSize in .git/lcars/config.json."
       # S308: the probe is the one place the whole suite is TIMED — record the
       # gate timeout it implies instead of discarding the measurement.
       lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" "$PROBE_OUTCOME" \
@@ -586,6 +592,8 @@ AMB_EOF
         echo "  ▸ probing test systems…"
         run_probe "$NEWCMD"
         report_probe
+        lcars_check_narrowing "$NEWCMD" "$CONFIG" \
+          || die "could not record suiteSize in .git/lcars/config.json."
         lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" "$PROBE_OUTCOME" \
           || die "could not record gateTimeout in .git/lcars/config.json."
         if [ "$PROBE_OUTCOME" = "pass" ]; then
@@ -683,6 +691,8 @@ AMB_EOF
       echo "  ▸ probing test systems…"
       run_probe "$NEWCMD"
       report_probe
+      lcars_check_narrowing "$NEWCMD" "$CONFIG" \
+        || die "could not record suiteSize in .git/lcars/config.json."
       lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" "$PROBE_OUTCOME" \
         || die "could not record gateTimeout in .git/lcars/config.json."
       if [ "$PROBE_OUTCOME" = "pass" ]; then

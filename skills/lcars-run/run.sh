@@ -12621,6 +12621,75 @@ proof_control_budget() { # tree leg-secs → seconds on stdout
   [ "$t" -le "$GATE_TIMEOUT_MAX" ] 2>/dev/null || t="$GATE_TIMEOUT_MAX"
   printf '%s' "$t"
 }
+
+# === THE ONE COMPARISON THE CONTROL NEVER MADE (S364) ======================
+# MEASURED ON THE LIVE CAPSTONE, 18 Nov 2026. The narrowing control recorded
+#   scopeControl: { executed: "7393", narrowingProven: true, narrowing: "proven" }
+# against a leg that executed 7,400 — and a full suite of 7,381. BOTH numbers
+# were the WHOLE SUITE. The control had faithfully measured that nothing was
+# excluded and the gate read the 7-test delta as a narrowing, because the one
+# number that gives those two their meaning was never consulted: HOW BIG IS
+# THIS REPO'S SUITE?
+#
+# `lcars init` / `lcars update --probe-tests` now MEASURE that number and record
+# it as `suiteSize` in .git/lcars/config.json, the same way `gateTimeout` is
+# seeded from the probe's measured wall clock. It is a MEASUREMENT, not a
+# setting: nothing infers it, and when it is absent the comparison below is
+# INERT — every repo initialized before this session behaves exactly as it did.
+#
+# WHY THE CONTROL'S NUMBER CANNOT DECIDE ALONE, and this is the trap that would
+# have turned the cure into a regression. "The empty-scope control ran the whole
+# suite, so nothing was excluded" is FALSE as a standalone rule, measured
+# 20 Nov 2026 against this repo's own known-good fixture
+# (tests/fixtures/mkflatrepo.sh): its control reads `executed: 10` against a
+# 10-test suite — an empty scope leaves `find` with nothing and `node --test`
+# falls back to its own discovery — while the leg honestly executed 2. That
+# narrowing is REAL, and a control-only rule parks it.
+#
+# So the comparison is BOTH numbers, which is the capstone's exact evidence:
+# the control executed at least the whole suite AND SO DID THE LEG. When the
+# leg itself ran everything, there is nothing left for the scope to have
+# excluded, whatever the delta between the two says. That is the narrowest
+# tightening that catches it, and it is a tightening: the leg moves from a
+# confident verdict to INCONCLUSIVE, which is never a pass.
+proof_suite_size_read() { # config reader → suiteSize scalar
+  # Same shape as gate_timeout_config_read: decode key tokens, allow JSON
+  # whitespace either side of the colon, keep the legacy scalar readers.
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'PY' | "$2" /dev/stdin suiteSize
+import json, re, sys
+with open(sys.argv[1]) as stream:
+    text = stream.read()
+string = r'"(?:[^"\\]|\\.)*"'
+for token in re.finditer(string, text):
+    if json.loads(token.group()) != "suiteSize":
+        continue
+    scalar = re.match(r'\s*:\s*(' + string + r'|[^,}\s]+)', text[token.end():])
+    if scalar:
+        print('{"suiteSize": ' + scalar.group(1) + '}')
+        break
+PY
+}
+proof_suite_size() { # [tree] → the repo's RECORDED full-suite size, or ""
+  local cfg raw
+  cfg="$(gate_cfg_file "${1:-}")"
+  [ -n "$cfg" ] || return 0
+  raw="$(proof_suite_size_read "$cfg" json_raw 2>/dev/null)"
+  case "$raw" in null) raw="" ;; esac
+  [ -n "$raw" ] || raw="$(proof_suite_size_read "$cfg" json_str 2>/dev/null)"
+  raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  # 10# forces decimal for the same reason resolve_gate_timeout does: a leading
+  # zero read as octal is how the 010s gate died at 7997ms.
+  case "$raw" in ''|*[!0-9]*) return 0 ;; *) raw="$(( 10#$raw ))" ;; esac
+  [ "$raw" -gt 0 ] 2>/dev/null || return 0
+  printf '%s' "$raw"
+}
+proof_ran_whole_suite() { # executed suiteSize → 0 when this run excluded NOTHING
+  local n="${1:-}" s="${2:-}"
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  case "$s" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$s" -gt 0 ] 2>/dev/null || return 1
+  [ "$n" -ge "$s" ] 2>/dev/null
+}
 PROOF_SCOPE_CONTROL=""   # "<runner> <executed>" | "" when it could not be read
 # PROOF_SCOPE_CONTROL_ZERO (S308 fix round 3) — the control run COLLECTED NO
 # TESTS AT ALL, in its runner's OWN words. This is NOT a nicety: it is what
@@ -14831,7 +14900,7 @@ flip_flop_gate() { # ticket parent-sha worktree
         # of declared files; a leg that stopped early on a red file runs fewer
         # and is the one shape this comparison can miss (it ends in a FAIL,
         # which blocks, never in a pass).
-        local ctl_n=1 ctl_want ctl_hit="" ctl_one
+        local ctl_n=1 ctl_want ctl_hit="" ctl_one ff_suite=""
         case "$FF_GATE_SCOPE_KIND" in
           files) ctl_n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
                  case "$ctl_n" in ''|*[!0-9]*) ctl_n=1 ;; esac ;;
@@ -14892,9 +14961,20 @@ flip_flop_gate() { # ticket parent-sha worktree
   what the TIP leg ran: $FF_TIP_CMD
 Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a test file at the path it was handed, so the runner received an EMPTY argument list and fell back to discovering its own tests. Either widen the command's own selection so it matches the ticket's test file(s), hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects." "$rels"
           return $?
+        elif ff_suite="$(proof_suite_size "$wt")"; [ -n "$ff_suite" ] \
+           && proof_ran_whole_suite "${PROOF_SCOPE_CONTROL##* }" "$ff_suite" \
+           && proof_ran_whole_suite "${FF_TIP_EXEC##* }" "$ff_suite"; then
+          # S364 — THE COMPARISON THE CONTROL NEVER MADE. See
+          # proof_suite_size/proof_ran_whole_suite for the capstone measurement
+          # and for why BOTH numbers have to be the whole suite before this
+          # fires. Reached only when the two counts DIFFER (the same-count
+          # branch above owns the equal case) — the capstone's 7393 vs 7400
+          # against a suite of 7381, which read as a narrowing and was not one.
+          FF_GATE_SCOPE_NARROWING=unproven
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with an EMPTY scope and this leg executed ${FF_TIP_EXEC##* } with the ticket's file(s)${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}, and BOTH are the repo's whole suite of ${ff_suite} recorded tests (suiteSize in .git/lcars/config.json) — so the scope excluded NOTHING and the difference between the two numbers is not a narrowing. Refresh the recorded size with \`lcars update --probe-tests\` if this repo's suite has grown"
         else
           FF_GATE_SCOPE_NARROWING=proven
-          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)"
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)${ff_suite:+, and fewer than the $ff_suite tests recorded for the whole suite}"
         fi
       fi ;;
     *)
