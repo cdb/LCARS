@@ -4,6 +4,25 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.3 — 2026-11-21
+
+### resolve-logs drives its bugs on bash 5 again
+
+`lcars resolve-logs` built its wave schedule behind `[ "${#ORDERED[@]:-0}" -gt 0 ]`.
+macOS's `/bin/bash` 3.2 accepts a default on an array length; GNU bash 5.3 rejects
+it as a `bad substitution`. With `#!/usr/bin/env bash`, a Homebrew bash 5 wins
+`PATH`, so on those machines the guard errored, no wave was built, no logged bug
+was driven, and the run ended with "nothing reached a Verify gate — nothing to
+ask." — a clean-looking exit that had done nothing. Measured on a real parent
+with six linked bugs.
+
+The guard is now the plain `${#ORDERED[@]}` (`ORDERED=()` is always declared
+first, so it stays `set -u` safe on 3.2 and 5.x). `tests/lcars-resolve-logs.test.sh`
+gains a static, bash-version-independent guard that fails on any
+length-with-default expansion in the script, because the behaviour tests only
+catch this when the suite itself happens to run under bash 5. Under bash 5.3 the
+suite went from 30+ failures and a 900s cage timeout to 214 passed in ~50s.
+
 ## 2026.11.2 — 2026-11-05
 
 A hands-off Mission can no longer land half-missing work, and a Mission you
